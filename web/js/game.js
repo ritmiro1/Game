@@ -88,6 +88,15 @@
     if (G.mode === 'bot' || G.mode === 'campaign') {
       if (G.state.side !== G.mySide) setTimeout(botTurn, 500);
     }
+    if ((G.mode === 'bot' || G.mode === 'campaign' || G.mode === 'hotseat') && !store().hintShown) {
+      store().hintShown = 1; UI.Store.save();
+      setTimeout(function () {
+        UI.toast('Два действия за ход · движение бесплатно, атака стоит энергии');
+      }, 900);
+      setTimeout(function () {
+        UI.toast('Кликни своего юнита — подсветятся доступные ходы и цели');
+      }, 3600);
+    }
     if (G.mode === 'online' && G.state.side !== G.mySide) showThink(true, 'противник думает…');
     return G;
   };
@@ -112,7 +121,7 @@
     const btnEnd = document.getElementById('btn-endturn');
     if (btnEnd) btnEnd.disabled = !isMyTurn() || G.busy;
     G.allMoves = (isMyTurn() && !G.busy) ? RZ.getMoves(s) : [];
-    if (G.selected >= 0 && (!s.uAlive[G.selected] || s.uOwner[G.selected] !== G.mySide)) G.selected = -1;
+    if (G.selected >= 0 && (!s.uAlive[G.selected] || s.uOwner[G.selected] !== controlSide())) G.selected = -1;
     G.actions = G.selected >= 0 ? G.allMoves.filter(function (a) { return a.u === G.selected; }) : [];
     if (G.targeting) {
       G.actions = G.allMoves.filter(function (a) {
@@ -243,6 +252,12 @@
   }
 
   /* ---------------- ввод ---------------- */
+  function controlSide() {
+    if (!G.state) return 0;
+    if (G.mode === 'hotseat') return G.state.side;
+    return G.mySide;
+  }
+
   function isMyTurn() {
     if (!G.state || G.state.over) return false;
     if (G.mode === 'hotseat') return true;
@@ -324,8 +339,8 @@
     refresh();
     await RZRender.playEvents(ev);
     G.busy = false;
-    if (keepU !== undefined && keepU >= 0 && !G.state.over && G.state.side === G.mySide &&
-      G.state.od > 0 && G.state.uAlive[keepU] && G.state.uOwner[keepU] === G.mySide) {
+    if (keepU !== undefined && keepU >= 0 && !G.state.over && G.state.side === controlSide() &&
+      G.state.od > 0 && G.state.uAlive[keepU] && G.state.uOwner[keepU] === controlSide()) {
       G.selected = keepU;
       refresh();
     }
@@ -352,6 +367,10 @@
     } else if (G.mode === 'hotseat') {
       if (!s.over) {
         updateHud();
+        if (s.side !== G.lastHotseatSide) {
+          G.lastHotseatSide = s.side;
+          UI.toast('Ход Ткача ' + (s.side === 0 ? 'I' : 'II') + ' · ' + RZ.FACTIONS[s.faction[s.side]].name);
+        }
       }
     } else if (G.mode === 'online') {
       if (s.side !== G.mySide && !s.over) showThink(true, 'противник думает…');
@@ -421,8 +440,12 @@
     else if (res === 'lose') RZAudio.play('lose');
     else RZAudio.play('draw');
 
-    const title = res === 'win' ? 'КОНТУР ЗАМКНУТ' : res === 'lose' ? 'КОНТУР РАЗОРВАН' : 'НИЧЬЯ';
+    let title = res === 'win' ? 'КОНТУР ЗАМКНУТ' : res === 'lose' ? 'КОНТУР РАЗОРВАН' : 'НИЧЬЯ';
+    if (G.mode === 'hotseat') {
+      title = s.winner === -1 ? 'НИЧЬЯ' : 'ПОБЕДИЛ ТКАЧ ' + (s.winner === 0 ? 'I' : 'II');
+    }
     const cls = res === 'win' ? 'win' : res === 'lose' ? 'lose' : 'draw';
+    const isOnline = G.mode === 'online';
     const why = s.winner === -1 ? 'Ничья по контролю.' :
       (coreOf(s.winner) < 0 ? 'Ядро уничтожено.' : 'Победа по контролю на 40-м ходу.');
     setTimeout(function () {
@@ -436,7 +459,10 @@
           '<div style="text-align:center"><div class="turn-lbl">действий</div><div class="turn-num" style="font-size:18px">' + G.actionCount + '</div></div>' +
           '<div style="text-align:center"><div class="turn-lbl">контроль</div><div class="turn-num" style="font-size:18px">' + Math.round(RZ.score(s, G.mySide)) + '</div></div>' +
           '</div>',
-        actions: [
+        actions: isOnline ? [
+          { label: 'В лобби', cls: 'primary', onClick: function () { UI.go('online'); } },
+          { label: 'В меню', onClick: function () { UI.go('menu'); } }
+        ] : [
           { label: 'Реванш', cls: 'primary', onClick: function () { restart(); } },
           { label: 'В меню', onClick: function () { UI.go('menu'); } }
         ]

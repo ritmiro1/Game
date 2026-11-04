@@ -7,7 +7,7 @@
 
 ## Скачать (Windows, .exe)
 
-**[⬇ Rezonans.exe](https://github.com/ritmiro1/Game/raw/arena/e84233e1-game/download/Rezonans.exe)** (~300 КБ, портативный, без установки)
+**[⬇ Rezonans.exe](https://raw.githubusercontent.com/ritmiro1/Game/arena/e84233e1-game/download/Rezonans.exe)** (~300 КБ, портативный, без установки)
 
 Как это работает: файл запускает встроенный локальный сервер и открывает игру в отдельном
 безрамочном окне (Edge/Chrome в режиме приложения). Ничего не устанавливается, реестр не трогается.

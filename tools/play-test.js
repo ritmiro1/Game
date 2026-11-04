@@ -97,8 +97,8 @@ async function autoPlay(label, cfg, maxSteps) {
   await wait(1200);
   console.log('режимы:');
   const C = w.RZ;
-  await autoPlay('бот (Бритва)', { mode: 'bot', mapId: 'rift', factions: [0, 2], botLevel: 1, botW: C.BOTS[1].w, botName: 'Такт', names: ['Тест', 'Такт'] }, 9000);
-  await autoPlay('кампания 1', { mode: 'campaign', mapId: 'core', factions: [0, 0], botLevel: 1, botW: C.BOTS[0].w, botName: 'Искра', chapter: C.CAMPAIGN[0], names: ['Тест', 'Искра'] }, 9000);
+  await autoPlay('бот (Бритва)', { mode: 'bot', mapId: 'rift', factions: [0, 2], botLevel: 1, botW: C.BOTS[1].w, botName: 'Такт', names: ['Тест', 'Такт'] }, 20000);
+  await autoPlay('кампания 1', { mode: 'campaign', mapId: 'core', factions: [0, 0], botLevel: 1, botW: C.BOTS[0].w, botName: 'Искра', chapter: C.CAMPAIGN[0], names: ['Тест', 'Искра'] }, 20000);
   await autoPlay('задача 1', { mode: 'puzzle', puzzle: C.PUZZLES[0], side: 0 }, 200);
   await autoPlay('хотсит', { mode: 'hotseat', mapId: 'clover', factions: [1, 1], names: ['А', 'Б'] }, 9000);
   console.log('ошибок:', errors.length);

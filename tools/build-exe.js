@@ -21,14 +21,18 @@ require('./build.js');
 const out = path.join(ROOT, 'download', 'Rezonans.exe');
 if (!fs.existsSync(path.dirname(out))) fs.mkdirSync(path.dirname(out), { recursive: true });
 
-const args = [
-  'cc', '-target', 'x86_64-windows-gnu',
-  path.join(ROOT, 'native', 'launcher.c'),
-  '-o', out,
-  '-O2', '-s',
-  '-Wl,--subsystem,windows',
-  '-lws2_32', '-lshell32', '-luser32'
-];
+// ресурсы (иконка)
+const rc = path.join(ROOT, 'native', 'app.rc');
+const res = path.join(ROOT, 'native', 'icon.res');
+if (fs.existsSync(rc) && fs.existsSync(path.join(ROOT, 'native', 'icon.ico'))) {
+  try {
+    execFileSync(ZIG, ['rc', rc, res], { stdio: 'inherit', cwd: path.join(ROOT, 'native') });
+  } catch (e) { console.warn('! ресурсы не собраны:', e.message); }
+}
+
+const args = ['cc', '-target', 'x86_64-windows-gnu', path.join(ROOT, 'native', 'launcher.c')];
+if (fs.existsSync(res)) args.push(res);
+args.push('-o', out, '-O2', '-s', '-Wl,--subsystem,windows', '-lws2_32', '-lshell32', '-luser32');
 console.log('zig ' + args.join(' '));
 execFileSync(ZIG, args, { stdio: 'inherit' });
 const st = fs.statSync(out);
