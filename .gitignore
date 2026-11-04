@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+tmp/
+*.log
+.cache/
+native/game_html.h
+server/data.json

@@ -1,0 +1,26 @@
+name: build-windows-exe
+
+on:
+  push:
+    branches: [main, 'arena/**']
+  workflow_dispatch:
+
+jobs:
+  exe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Zig
+        run: |
+          pip install ziglang
+          echo "$(python -c 'import ziglang,os;print(os.path.dirname(ziglang.__file__))')" >> $GITHUB_PATH
+      - name: Build
+        run: |
+          npm install --no-audit --no-fund
+          ZIG="$(python -c 'import ziglang,os;print(os.path.join(os.path.dirname(ziglang.__file__),"zig"))')" node tools/build-exe.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rezonans-windows
+          path: download/Rezonans.exe

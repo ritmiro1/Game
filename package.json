@@ -1,0 +1,19 @@
+{
+  "name": "rezonans",
+  "version": "1.0.0",
+  "description": "РЕЗОНАНС — дуэль ткачей. Оригинальная гексагональная онлайн-дуэль с сильным ИИ.",
+  "private": true,
+  "author": "ritmiro1",
+  "license": "MIT",
+  "scripts": {
+    "start": "node server/server.js",
+    "build": "node tools/build.js",
+    "build:exe": "node tools/build.js && node tools/build-exe.js",
+    "test": "node tools/selftest.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.1.0",
+    "jsdom": "^30.1.3",
+    "ws": "^8.18.0"
+  }
+}

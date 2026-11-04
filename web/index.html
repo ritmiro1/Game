@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#04050b">
+<title>РЕЗОНАНС — дуэль ткачей</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="bg"></canvas>
+<div id="vignette"></div>
+<div id="app">
+
+  <header id="topbar">
+    <div class="logo" data-go="menu">
+      <div class="logo-mark"></div>
+      <div class="logo-text">Резонанс<small>дуэль ткачей</small></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="tb-stat"><span>Победы</span><b id="tb-wins">0</b><span>/</span><b id="tb-games">0</b></div>
+    <div class="pill"><span>Рейтинг</span><b id="tb-elo">1200</b></div>
+    <div class="pill" id="tb-name-pill" style="cursor:pointer" data-go="profile">
+      <span id="tb-name">Гость</span><span style="color:var(--dim)">▾</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ЗАГРУЗКА -->
+    <section id="s-loading" class="screen active">
+      <div style="position:absolute;inset:0;display:grid;place-items:center">
+        <div>
+          <div class="loader-ring"></div>
+          <div class="load-txt">настройка контура</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- МЕНЮ -->
+    <section id="s-menu" class="screen">
+      <div class="wrap">
+        <div class="hero">
+          <h1>РЕЗОНАНС</h1>
+          <p>дуэль ткачей · гексагональная арена</p>
+          <div class="glow"></div>
+        </div>
+
+        <div class="menu-grid">
+          <div class="mcard" data-go="bots">
+            <span class="ic">◈</span>
+            <h3>Быстрая дуэль</h3>
+            <p>Семь ботов от ученика до Тишины. Пять уровней сложности, три фракции, десять арен.</p>
+            <span class="badge">ИИ</span>
+          </div>
+          <div class="mcard" data-go="campaign">
+            <span class="ic">✧</span>
+            <h3>Кампания</h3>
+            <p>Восемь глав станции «Тихий Резонатор». История Ткача, который слышит слишком много.</p>
+            <span class="badge" id="camp-progress">0/8</span>
+          </div>
+          <div class="mcard" data-go="online">
+            <span class="ic">⌾</span>
+            <h3>Онлайн</h3>
+            <p>Лобби, вызовы, подбор по рейтингу, топ игроков и общий чат. Дуэль в реальном времени.</p>
+            <span class="badge">СЕТЬ</span>
+          </div>
+          <div class="mcard" data-go="puzzles">
+            <span class="ic">⟁</span>
+            <h3>Испытания</h3>
+            <p>Шесть задач на точный расчёт. Убей Ядро за отведённое число действий.</p>
+            <span class="badge" id="puz-progress">0/6</span>
+          </div>
+          <div class="mcard" data-go="hotseat">
+            <span class="ic">⚔</span>
+            <h3>Дуэль на одном экране</h3>
+            <p>Два Ткача за одним устройством. Передавай ход и не подглядывай.</p>
+          </div>
+          <div class="mcard" data-go="rules">
+            <span class="ic">≡</span>
+            <h3>Правила и кодекс</h3>
+            <p>Все механики, юниты, фракции и арены. Десять минут — и ты Ткач.</p>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:18px">
+          <div class="split">
+            <div>
+              <h2 style="margin-bottom:6px">Твой контур</h2>
+              <div class="muted" id="profile-line">Гость · рейтинг 1200 · игр 0</div>
+            </div>
+            <div class="row">
+              <button class="btn sm" data-go="profile">Профиль</button>
+              <button class="btn sm ghost" data-go="settings">Настройки</button>
+            </div>
+          </div>
+        </div>
+        <div style="text-align:center;margin-top:16px" class="tagline">
+          Версия 1.0 · движок дуэли · <span id="build-tag">web</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ИГРА -->
+    <section id="s-game" class="screen">
+      <div class="game-hud">
+        <div class="hud-card enemy" id="hud-enemy">
+          <div class="ava" id="e-ava">◉</div>
+          <div style="min-width:0">
+            <div class="hud-name" id="e-name">Противник</div>
+            <div class="hud-sub" id="e-sub">Ядро 6/6</div>
+            <div class="bar"><i id="e-core" style="width:100%"></i></div>
+            <div class="energy-row" id="e-energy"></div>
+          </div>
+        </div>
+        <div class="hud-center">
+          <div class="turn-lbl">ход</div>
+          <div class="turn-num"><span id="turn-num">1</span><span style="font-size:12px;color:var(--dim)">/40</span></div>
+          <div class="sd-warn" id="sd-warn"></div>
+        </div>
+        <div class="hud-card active" id="hud-me">
+          <div class="ava" id="m-ava">◈</div>
+          <div style="min-width:0">
+            <div class="hud-name" id="m-name">Ты</div>
+            <div class="hud-sub" id="m-sub">Ядро 6/6</div>
+            <div class="bar"><i id="m-core" style="width:100%"></i></div>
+            <div class="energy-row" id="m-energy"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="board-host" id="board-host">
+        <canvas id="board"></canvas>
+        <div class="board-overlay"><div class="think hide" id="think"><div class="spinner"></div><span id="think-txt">противник думает…</span></div></div>
+      </div>
+
+      <div class="action-bar">
+        <div class="ap-pips" id="ap-pips"><span>действия</span></div>
+        <div class="ability-bar" id="ability-bar"></div>
+        <button class="btn sm ghost" id="btn-undo" title="Отменить выбор">Сброс</button>
+        <button class="btn primary" id="btn-endturn">Завершить ход <kbd>Space</kbd></button>
+        <button class="btn sm ghost" id="btn-quit-game">Выйти</button>
+      </div>
+    </section>
+
+    <!-- ОНЛАЙН -->
+    <section id="s-online" class="screen">
+      <div class="wrap">
+        <div class="split" style="margin-bottom:16px">
+          <div>
+            <h2 style="margin:0 0 4px;font-size:20px">Сетевой контур</h2>
+            <div class="muted" id="online-status">Не подключено</div>
+          </div>
+          <div class="row">
+            <button class="btn sm" id="btn-reconnect">Подключиться</button>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="panel">
+            <div class="split" style="margin-bottom:12px">
+              <h2 style="margin:0">Лобби</h2>
+              <div class="row">
+                <button class="btn sm primary" id="btn-create-room">Создать дуэль</button>
+                <button class="btn sm" id="btn-quick">Быстрый подбор</button>
+                <button class="btn sm ghost" id="btn-refresh-lobby">⟳</button>
+              </div>
+            </div>
+            <div id="lobby-list" class="scroll" style="max-height:330px;overflow-y:auto">
+              <div class="muted">Подключись к серверу, чтобы увидеть дуэли.</div>
+            </div>
+            <div class="divider"></div>
+            <div class="row wrap">
+              <div style="flex:1;min-width:180px">
+                <label class="fl">Сервер</label>
+                <input id="inp-server" placeholder="ws://localhost:8080" value="">
+              </div>
+              <div style="flex:1;min-width:150px">
+                <label class="fl">Твоё имя</label>
+                <input id="inp-name" maxlength="16" placeholder="Ткач">
+              </div>
+              <div style="min-width:150px">
+                <label class="fl">Фракция</label>
+                <select id="sel-faction-online"></select>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="panel">
+              <h2>Топ Ткачей</h2>
+              <div id="lb-list" class="scroll" style="max-height:300px;overflow-y:auto">
+                <div class="muted">Рейтинг появится после подключения.</div>
+              </div>
+            </div>
+            <div class="panel">
+              <h2>Канал</h2>
+              <div class="chat scroll" id="chat-log"></div>
+              <div class="row" style="margin-top:10px">
+                <input id="inp-chat" placeholder="Сообщение…" maxlength="160">
+                <button class="btn sm" id="btn-chat">→</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- КАМПАНИЯ -->
+    <section id="s-campaign" class="screen">
+      <div class="wrap">
+        <div class="split" style="margin-bottom:14px">
+          <div>
+            <h2 style="margin:0 0 4px;font-size:20px">Кампания</h2>
+            <div class="muted">Станция «Тихий Резонатор» · восемь глав</div>
+          </div>
+          <button class="btn sm ghost" data-go="menu">Назад</button>
+        </div>
+        <div class="cards" id="campaign-list"></div>
+      </div>
+    </section>
+
+    <!-- БОТЫ -->
+    <section id="s-bots" class="screen">
+      <div class="wrap">
+        <div class="split" style="margin-bottom:14px">
+          <div>
+            <h2 style="margin:0 0 4px;font-size:20px">Быстрая дуэль</h2>
+            <div class="muted">Выбери противника — и контур замкнётся</div>
+          </div>
+          <div class="row">
+            <select id="sel-map-bot" style="width:auto"></select>
+            <select id="sel-faction-bot" style="width:auto"></select>
+            <button class="btn sm ghost" data-go="menu">Назад</button>
+          </div>
+        </div>
+        <div class="cards" id="bots-list"></div>
+      </div>
+    </section>
+
+    <!-- ИСПЫТАНИЯ -->
+    <section id="s-puzzles" class="screen">
+      <div class="wrap">
+        <div class="split" style="margin-bottom:14px">
+          <div>
+            <h2 style="margin:0 0 4px;font-size:20px">Испытания</h2>
+            <div class="muted">Только расчёт. Только точные действия.</div>
+          </div>
+          <button class="btn sm ghost" data-go="menu">Назад</button>
+        </div>
+        <div class="cards" id="puzzle-list"></div>
+      </div>
+    </section>
+
+    <!-- ПРАВИЛА -->
+    <section id="s-rules" class="screen">
+      <div class="wrap">
+        <div class="split" style="margin-bottom:14px">
+          <div>
+            <h2 style="margin:0 0 4px;font-size:20px">Правила и кодекс</h2>
+            <div class="muted">Как звучит контур</div>
+          </div>
+          <button class="btn sm ghost" data-go="menu">Назад</button>
+        </div>
+        <div id="rules-body"></div>
+      </div>
+    </section>
+
+    <!-- ПРОФИЛЬ -->
+    <section id="s-profile" class="screen">
+      <div class="wrap">
+        <div class="split" style="margin-bottom:14px">
+          <div>
+            <h2 style="margin:0 0 4px;font-size:20px">Профиль Ткача</h2>
+            <div class="muted">Локальная статистика и настройки</div>
+          </div>
+          <button class="btn sm ghost" data-go="menu">Назад</button>
+        </div>
+        <div class="grid2">
+          <div class="panel">
+            <h2>Данные</h2>
+            <div class="col">
+              <div><label class="fl">Позывной</label><input id="inp-profile-name" maxlength="16"></div>
+              <div><label class="fl">Фракция по умолчанию</label><select id="sel-profile-faction"></select></div>
+              <div><label class="fl">Уровень ботов по умолчанию</label><select id="sel-profile-level"></select></div>
+            </div>
+            <div class="divider"></div>
+            <div class="row wrap">
+              <button class="btn sm primary" id="btn-save-profile">Сохранить</button>
+              <button class="btn sm ghost" id="btn-reset-progress">Сбросить прогресс</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Статистика</h2>
+            <div id="profile-stats" class="col"></div>
+            <div class="divider"></div>
+            <h2>Звук</h2>
+            <div class="row wrap">
+              <button class="btn sm" id="btn-toggle-sound">Звук: вкл</button>
+              <button class="btn sm" id="btn-toggle-music">Эмбиент: вкл</button>
+            </div>
+            <div class="divider"></div>
+            <h2>Об игре</h2>
+            <div class="muted">
+              «Резонанс» — оригинальная дуэль на гексагональной арене. Два Ткача по очереди делают по два действия:
+              двигают юнитов, бьют, используют способности и призывают подкрепления. Побеждает тот, кто уничтожит
+              вражеское Ядро или удержит больше контроля к 40-му ходу.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toasts"></div>
+
+<script id="worker-src" type="text/plain"></script>
+<script src="../shared/content.js"></script>
+<script src="../shared/engine.js"></script>
+<script src="../shared/ai.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/render.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/game.js"></script>
+<script src="js/net.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
