@@ -89,6 +89,7 @@ npm run build:exe    # dist + native/game_html.h + download/Rezonans.exe (нуж
 ```bash
 npm test                     # движок: легальность, завершаемость, кодирование состояния
 node tools/net-test.js       # сетевой протокол: лобби, дуэль, Эло, чат, подбор
+node tools/online-test.js    # полная онлайн-дуэль двух клиентов (jsdom + реальный сервер)
 node tools/play-test.js      # автопрогон партий через UI (jsdom)
 node tools/shot.js           # рендер арены в PNG
 ```
