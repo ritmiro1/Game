@@ -159,6 +159,8 @@
     const eCard = el('hud-enemy'), mCard = el('hud-me');
     eCard.classList.toggle('active', s.side === leftSide);
     mCard.classList.toggle('active', s.side === rightSide);
+    const scL = Math.round(RZ.score(s, leftSide)), scR = Math.round(RZ.score(s, rightSide));
+    el('score-line').innerHTML = 'контроль <i>' + scL + '</i> : <b>' + scR + '</b>';
     el('sd-warn').textContent = s.turn >= RZ.SUDDEN_DEATH ? 'РАЗЛОМ: урон +1' : ('разлом через ' + (RZ.SUDDEN_DEATH - s.turn) + ' х.');
     // очки действий
     const pips = el('ap-pips');
