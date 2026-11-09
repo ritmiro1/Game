@@ -1,0 +1,13 @@
+# Сборка (готовые артефакты лежат в dist/ и версионируются)
+build/
+vendor_raylib_objects/
+*.pdb
+*.o
+# Тестовые бинарники
+tests/bin/
+uismoke*
+main_asan
+simtest
+# Кэш
+__pycache__/
+*.pyc
