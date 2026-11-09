@@ -1210,6 +1210,9 @@ void AssetsBuildPropGroups(Assets *a, Game *g) {
                     if (grasses > 0) { meshes[n] = mb_build(&grass); mats[n] = a->matLeaf; n++; }
                 }
                 if (n > 0 && a->propGroupCount < (int)(sizeof(a->propGroups) / sizeof(a->propGroups[0]))) {
+                    a->propGroupCenter[a->propGroupCount].x = (x0 + x1) * 0.5f;
+                    a->propGroupCenter[a->propGroupCount].y = WorldHeight(g, (x0 + x1) * 0.5f, (z0 + z1) * 0.5f);
+                    a->propGroupCenter[a->propGroupCount].z = (z0 + z1) * 0.5f;
                     a->propGroups[a->propGroupCount++] = BuildModel(meshes, mats, n);
                 }
             }
@@ -1217,6 +1220,13 @@ void AssetsBuildPropGroups(Assets *a, Game *g) {
             prog(0.45f + 0.35f * (float)(cz * GRID + cx + 1) / (float)(GRID * GRID), "Растительность и камни...");
         }
     }
-    TraceLog(LOG_INFO, "ASSETS: групп декора %d (деревьев %d, камней %d, камыша %d)",
-             a->propGroupCount, t->treeCount, t->rockCount, t->reedCount);
+    long verts = 0, tris = 0;
+    for (int i = 0; i < a->propGroupCount; i++) {
+        for (int m = 0; m < a->propGroups[i].meshCount; m++) {
+            verts += a->propGroups[i].meshes[m].vertexCount;
+            tris += a->propGroups[i].meshes[m].triangleCount;
+        }
+    }
+    TraceLog(LOG_INFO, "ASSETS: групп декора %d (деревьев %d, камней %d, камыша %d), вершин %ld, треугольников %ld",
+             a->propGroupCount, t->treeCount, t->rockCount, t->reedCount, verts, tris);
 }

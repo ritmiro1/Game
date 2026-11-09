@@ -113,7 +113,7 @@ void UnloadRandomSequence(int *sequence) { ((void)0); }
 void TakeScreenshot(const char *fileName) { ((void)0); }
 void SetConfigFlags(unsigned int flags) { ((void)0); }
 void OpenURL(const char *url) { ((void)0); }
-void TraceLog(int logLevel, const char *text, ...) { ((void)0); }
+void TraceLog(int logLevel, const char *text, ...) { (void)logLevel; { va_list a; va_start(a, text); vprintf(text, a); va_end(a); printf("\n"); } }
 void SetTraceLogLevel(int logLevel) { ((void)0); }
 void * MemAlloc(unsigned int size) { return (void *){ 0 }; }
 void * MemRealloc(void *ptr, unsigned int size) { return (void *){ 0 }; }

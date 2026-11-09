@@ -12,13 +12,14 @@ typedef struct {
     RenderTexture2D blurB;
     Camera3D camera;
     bool postEnabled;
-    float qualityScale;
+    float qualityScale;     // масштаб внутреннего буфера (1.0 — полный)
     int width, height;
     float splashFlash;
     float bobPhase;
 } Renderer;
 
 bool RendererInit(Renderer *r);
+void RendererSetQuality(Renderer *r, float renderScale, float cullDistance, bool post);
 void RendererResize(Renderer *r, int w, int h);
 void RendererFree(Renderer *r);
 void RenderWorld(Renderer *r, Assets *a, Game *g, float dt);

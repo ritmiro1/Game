@@ -6,6 +6,8 @@
 #include "rlgl.h"
 
 static void set_float(Shader s, int loc, float v) { if (loc >= 0 && s.id) SetShaderValue(s, loc, &v, SHADER_UNIFORM_FLOAT); }
+static float g_cullDist = 260.0f;   // дальность отсечения декора
+
 static void set_vec3(Shader s, int loc, Vector3 v) { if (loc >= 0 && s.id) SetShaderValue(s, loc, (float[]){ v.x, v.y, v.z }, SHADER_UNIFORM_VEC3); }
 static void set_int(Shader s, int loc, int v) { if (loc >= 0 && s.id) SetShaderValue(s, loc, &v, SHADER_UNIFORM_INT); }
 
@@ -36,6 +38,7 @@ bool RendererInit(Renderer *r) {
 void RendererResize(Renderer *r, int w, int h) {
     if (w < 64) w = 64;
     if (h < 64) h = 64;
+    if (r->qualityScale <= 0.0f) r->qualityScale = 1.0f;
     if (w == r->width && h == r->height && r->scene.id > 0) return;
     if (r->scene.id > 0) UnloadRenderTexture(r->scene);
     if (r->bright.id > 0) UnloadRenderTexture(r->bright);
@@ -43,16 +46,34 @@ void RendererResize(Renderer *r, int w, int h) {
     if (r->blurB.id > 0) UnloadRenderTexture(r->blurB);
     r->width = w;
     r->height = h;
-    r->scene = LoadRenderTexture(w, h);
+    int sw = (int)((float)w * r->qualityScale);
+    int sh = (int)((float)h * r->qualityScale);
+    if (sw < 64) sw = 64;
+    if (sh < 64) sh = 64;
+    r->scene = LoadRenderTexture(sw, sh);
     SetTextureFilter(r->scene.texture, TEXTURE_FILTER_BILINEAR);
-    int hw = w / 2, hh = h / 2;
-    int qw = w / 4, qh = h / 4;
+    int hw = sw / 2, hh = sh / 2;
+    int qw = sw / 4, qh = sh / 4;
     r->bright = LoadRenderTexture(hw > 8 ? hw : 8, hh > 8 ? hh : 8);
     r->blurA = LoadRenderTexture(qw > 8 ? qw : 8, qh > 8 ? qh : 8);
     r->blurB = LoadRenderTexture(qw > 8 ? qw : 8, qh > 8 ? qh : 8);
     SetTextureFilter(r->bright.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(r->blurA.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(r->blurB.texture, TEXTURE_FILTER_BILINEAR);
+}
+
+void RendererSetQuality(Renderer *r, float renderScale, float cullDistance, bool post) {
+    if (renderScale < 0.35f) renderScale = 0.35f;
+    if (renderScale > 1.0f) renderScale = 1.0f;
+    if (cullDistance < 60.0f) cullDistance = 60.0f;
+    g_cullDist = cullDistance;
+    r->postEnabled = post;
+    if (r->qualityScale != renderScale) {
+        r->qualityScale = renderScale;
+        int w = r->width, h = r->height;
+        r->width = 0; r->height = 0;      // форсируем пересоздание буферов
+        RendererResize(r, w, h);
+    }
 }
 
 void RendererFree(Renderer *r) {
@@ -89,7 +110,13 @@ static void draw_terrain(Assets *a, Game *g) {
 
 static void draw_props(Assets *a, Game *g) {
     lit_setup(a, g, 0, 0.0f, 0.12f, (Vector3){ 1, 1, 1 });
-    for (int i = 0; i < a->propGroupCount; i++) DrawModel(a->propGroups[i], Vector3Zero(), 1.0f, WHITE);
+    const float cull2 = (g_cullDist + 30.0f) * (g_cullDist + 30.0f);
+    for (int i = 0; i < a->propGroupCount; i++) {
+        Vec3 c = a->propGroupCenter[i];
+        float dx = c.x - g->camPos.x, dz = c.z - g->camPos.z;
+        if (dx * dx + dz * dz > cull2) continue;   // батч за пределами видимой дальности
+        DrawModel(a->propGroups[i], Vector3Zero(), 1.0f, WHITE);
+    }
 }
 
 static void draw_water(Assets *a, Game *g) {
@@ -405,8 +432,9 @@ static void draw_lantern_glow(Assets *a, Game *g) {
 static void post_process(Renderer *r, Assets *a, Game *g) {
     if (!r->postEnabled || !a->blurOk || !a->compositeOk) {
         BeginBlendMode(BLEND_ALPHA);
-        DrawTextureRec(r->scene.texture, (Rectangle){ 0, 0, (float)r->width, (float)-r->height },
-                       (Vector2){ 0, 0 }, WHITE);
+        DrawTexturePro(r->scene.texture,
+                       (Rectangle){ 0, 0, (float)r->scene.texture.width, (float)-r->scene.texture.height },
+                       (Rectangle){ 0, 0, (float)r->width, (float)r->height }, (Vector2){ 0, 0 }, 0.0f, WHITE);
         EndBlendMode();
         return;
     }
@@ -417,7 +445,7 @@ static void post_process(Renderer *r, Assets *a, Game *g) {
     BeginShaderMode(bl);
     set_float(bl, a->bThreshold, 0.68f);
     SetShaderValue(bl, a->bDir, (float[]){ 1.0f / (float)r->bright.texture.width, 0.0f }, SHADER_UNIFORM_VEC2);
-    DrawTextureRec(r->scene.texture, (Rectangle){ 0, 0, (float)r->width, (float)-r->height },
+    DrawTextureRec(r->scene.texture, (Rectangle){ 0, 0, (float)r->scene.texture.width, (float)-r->scene.texture.height },
                    (Vector2){ 0, 0 }, WHITE);
     EndShaderMode();
     EndTextureMode();
@@ -448,8 +476,8 @@ static void post_process(Renderer *r, Assets *a, Game *g) {
     ClearBackground(BLACK);
     BeginShaderMode(bl);
     set_float(bl, a->bThreshold, 0.0f);
-    SetShaderValue(bl, a->bDir, (float[]){ 2.0f / (float)r->width, 0.0f }, SHADER_UNIFORM_VEC2);
-    DrawTextureRec(r->scene.texture, (Rectangle){ 0, 0, (float)r->width, (float)-r->height },
+    SetShaderValue(bl, a->bDir, (float[]){ 2.0f / (float)r->scene.texture.width, 0.0f }, SHADER_UNIFORM_VEC2);
+    DrawTextureRec(r->scene.texture, (Rectangle){ 0, 0, (float)r->scene.texture.width, (float)-r->scene.texture.height },
                    (Vector2){ 0, 0 }, WHITE);
     EndShaderMode();
     EndTextureMode();
@@ -477,7 +505,7 @@ static void post_process(Renderer *r, Assets *a, Game *g) {
     int unit1 = 1, unit2 = 2;
     SetShaderValue(cp, GetShaderLocation(cp, "textureBloom"), &unit1, SHADER_UNIFORM_INT);
     SetShaderValue(cp, GetShaderLocation(cp, "textureBlur"), &unit2, SHADER_UNIFORM_INT);
-    float res[2] = { (float)r->width, (float)r->height };
+    float res[2] = { (float)r->scene.texture.width, (float)r->scene.texture.height };
     SetShaderValue(cp, a->cRes, res, SHADER_UNIFORM_VEC2);
     set_float(cp, a->cBloom, g->settings.bloom ? 0.75f : 0.0f);
     set_float(cp, a->cDof, g->settings.tiltShift ? 0.65f : 0.0f);
@@ -495,8 +523,9 @@ static void post_process(Renderer *r, Assets *a, Game *g) {
     if (g->env.weather == W_STORM) { tint[0] = 0.94f; tint[1] = 0.97f; tint[2] = 1.04f; }
     if (EnvIsNight(&g->env)) { tint[0] = 0.90f; tint[1] = 0.94f; tint[2] = 1.07f; }
     SetShaderValue(cp, a->cTint, tint, SHADER_UNIFORM_VEC3);
-    DrawTextureRec(r->scene.texture, (Rectangle){ 0, 0, (float)r->width, (float)-r->height },
-                   (Vector2){ 0, 0 }, WHITE);
+    DrawTexturePro(r->scene.texture,
+                   (Rectangle){ 0, 0, (float)r->scene.texture.width, (float)-r->scene.texture.height },
+                   (Rectangle){ 0, 0, (float)r->width, (float)r->height }, (Vector2){ 0, 0 }, 0.0f, WHITE);
     EndShaderMode();
 }
 

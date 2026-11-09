@@ -37,7 +37,7 @@ MANUAL = {
  "Sound LoadSoundFromWave": "return (Sound){ 0 };",
  "Music LoadMusicStreamFromMemory": "return (Music){ 0 };",
  "char *TextFormat": "static char b[1024]; va_list a; va_start(a, text); vsnprintf(b, sizeof b, text, a); va_end(a); return b;",
- "void TraceLog": "(void)logLevel; (void)text;",
+ "void TraceLog": "(void)logLevel; { va_list a; va_start(a, text); vprintf(text, a); va_end(a); printf(\"\\n\"); }",
  "Material LoadMaterialDefault":
    "{ Material m = { 0 }; m.maps = (MaterialMap *)calloc(12, sizeof(MaterialMap)); return m; }",
  "void UnloadMaterial": "{ if (material.maps) free(material.maps); }",
@@ -46,6 +46,7 @@ MANUAL = {
 }
 
 MANUAL.update({
+ "const unsigned char *glGetString": "return (const unsigned char *)\"stub-renderer\";",
  "bool IsWindowReady": "return true;",
  "bool IsAudioDeviceReady": "return true;",
  "const char *GetApplicationDirectory": "return \"./\";",
@@ -91,8 +92,8 @@ def main():
             if name in k and k.startswith(ret) and v:
                 body = v
                 break
-        if "..." in args:
-            body = "((void)0);" if ret in ("void","") else "return (%s){ 0 };" % ret
+        if "..." in args and body == "((void)0);":
+            body = "((void)0);"   # вариативные функции без ручной реализации — пустышка if ret in ("void","") else "return (%s){ 0 };" % ret
         lines.append("%s %s(%s) { %s }\n" % (ret if ret else "void", name, args if args else "void", body))
     open("tests/stub/raylib_stub.c", "w").write("".join(lines))
     print("stubs:", len(seen))

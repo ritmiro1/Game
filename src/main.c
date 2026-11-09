@@ -25,6 +25,17 @@
 #include <string.h>
 #include <stdarg.h>
 
+// Небольшая часть OpenGL, нужная для журнала (без подключения GL-заголовков)
+#ifndef GL_RENDERER
+#define GL_RENDERER 0x1F01u
+#define GL_VERSION  0x1F02u
+#endif
+#if defined(_WIN32)
+  __declspec(dllimport) const unsigned char *__stdcall glGetString(unsigned int name);
+#else
+  extern const unsigned char *glGetString(unsigned int name);
+#endif
+
 #if defined(_WIN32)
   #include <direct.h>
   // Windows.h не подключаем: он конфликтует с типами raylib (Rectangle, CloseWindow, ShowCursor).
@@ -44,6 +55,7 @@ static UI UIx;
 
 static FILE *logFile = NULL;
 static bool safeMode = false;
+static bool lowMode = false;
 static bool uiReady = false;
 
 // ------------------------------------------------------------------ журнал
@@ -172,18 +184,21 @@ static bool load_existing(void) {
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strstr(argv[i], "safe") || strstr(argv[i], "nosound")) safeMode = true;
+        if (strstr(argv[i], "low")) lowMode = true;
     }
     char safeFile[700];
     snprintf(safeFile, sizeof(safeFile), "%ssafe.txt", GetApplicationDirectory());
     if (FileExists(safeFile)) safeMode = true;
 
-    SetTraceLogLevel(LOG_INFO);
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
-    InitWindow(1600, 900, "Тихий Залив — 3D рыбалка");
+    // Журнал открываем ДО окна: тогда в него попадает информация raylib об OpenGL
     startup_log_open();
     SetTraceLogCallback(trace_to_log);
+    SetTraceLogLevel(LOG_INFO);
+    logf_("=== ТИХИЙ ЗАЛИВ %s (сборка 3: адаптивное качество) ===", TB_VERSION);
+    logf_("Аргументы: safe=%d low=%d", (int)safeMode, (int)lowMode);
 
-    logf_("=== ТИХИЙ ЗАЛИВ %s (сборка 2: пошаговая загрузка) ===", TB_VERSION);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
+    InitWindow(1280, 720, "Тихий Залив — 3D рыбалка");
     if (!IsWindowReady()) {
         logf_("ОШИБКА: окно/OpenGL 3.3 недоступны");
 #if defined(_WIN32)
@@ -208,6 +223,18 @@ int main(int argc, char **argv) {
     SetWindowMinSize(640, 400);
     SetExitKey(KEY_NULL);
     SetTargetFPS(60);
+
+    {
+        const char *rend = (const char *)glGetString(GL_RENDERER);
+        const char *vers = (const char *)glGetString(GL_VERSION);
+        logf_("GL renderer: %s", rend ? rend : "?");
+        logf_("GL version: %s", vers ? vers : "?");
+        if (rend && (strstr(rend, "GDI Generic") || strstr(rend, "llvmpipe") ||
+                     strstr(rend, "Software") || strstr(rend, "Basic Render"))) {
+            lowMode = true;
+            logf_("Обнаружен программный/базовый OpenGL — включён низкий режим");
+        }
+    }
 
     boot_frame("Запуск...", 0.02f);
     logf_("Окно создано, первый кадр отрисован");
@@ -264,8 +291,34 @@ int main(int argc, char **argv) {
     boot_frame("Подготовка пост-обработки...", 0.98f);
     logf_("RendererInit...");
     RendererInit(&R);
-    if (safeMode) R.postEnabled = false;
-    logf_("RendererInit: пост-обработка %s", R.postEnabled ? "вкл" : "выкл");
+    if (safeMode) RendererSetQuality(&R, 1.0f, 260.0f, false);
+    if (lowMode) RendererSetQuality(&R, 0.7f, 110.0f, false);
+    logf_("RendererInit: пост-обработка %s, масштаб %.2f",
+          R.postEnabled ? "вкл" : "выкл", (double)R.qualityScale);
+
+    // Прогрев: первый кадр 3D-сцены может быть очень дорогим (компиляция шейдеров,
+    // заполнение буферов). Делаем его под экраном загрузки и сразу подбираем качество.
+    boot_frame("Проверка видеокарты...", 0.99f);
+    {
+        float q = R.qualityScale;
+        double t0 = GetTime();
+        RenderWorld(&R, &A, &G, 1.0f / 60.0f);
+        double warm = (GetTime() - t0) * 1000.0;
+        logf_("Пробный кадр: %.0f мс (пост %d, масштаб %.2f)", warm, (int)R.postEnabled, (double)q);
+        if (warm > 900.0) {
+            RendererSetQuality(&R, 0.5f, 80.0f, false);
+            SetWindowSize(1024, 576);
+            logf_("Очень долгий первый кадр — окно 1024x576, минимальное качество");
+        } else if (warm > 300.0) {
+            RendererSetQuality(&R, 0.7f, 120.0f, false);
+        }
+        if (!R.postEnabled || R.qualityScale != q) {
+            t0 = GetTime();
+            RenderWorld(&R, &A, &G, 1.0f / 60.0f);
+            logf_("Повторный пробный кадр: %.0f мс (пост %d, масштаб %.2f)",
+                  (GetTime() - t0) * 1000.0, (int)R.postEnabled, (double)R.qualityScale);
+        }
+    }
 
     G.screen = GS_TITLE;
     BuildSavePath(&G);
@@ -405,7 +458,24 @@ int main(int argc, char **argv) {
 
         // ------------------------------------------------------------ отрисовка
         if (IsWindowResized()) RendererResize(&R, GetScreenWidth(), GetScreenHeight());
+        if (frames <= 3) logf_("кадр %d: отрисовка начата", frames);
+        double tRender = GetTime();
         RenderWorld(&R, &A, &G, dt);
+        double frameMs = (GetTime() - tRender) * 1000.0;
+        if (frames <= 3) logf_("кадр %d: отрисован за %.0f мс", frames, frameMs);
+        if (frameMs > 500.0) {
+            logf_("Медленный кадр: %.0f мс (пост %d, масштаб %.2f)", frameMs,
+                  (int)R.postEnabled, (double)R.qualityScale);
+        }
+        if (frames == 1 && frameMs > 700.0 && (R.postEnabled || R.qualityScale > 0.95f)) {
+            RendererSetQuality(&R, 0.7f, 120.0f, false);
+            logf_("Первый кадр медленный (%.0f мс) — включено облегчённое качество", frameMs);
+        }
+        if (frames == 90 && avgFrame > 0.075f && (R.postEnabled || R.qualityScale > 0.6f)) {
+            RendererSetQuality(&R, 0.6f, 90.0f, false);
+            logf_("Низкий FPS (%.0f) — качество понижено ещё раз", 1.0f / avgFrame);
+        }
+        if (frames % 300 == 0) logf_("FPS: %.0f", 1.0f / avgFrame);
         DrawRainOverlay(&R, &A, &G, dt);
 
         switch (G.screen) {

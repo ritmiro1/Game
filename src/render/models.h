@@ -18,6 +18,7 @@ typedef struct {
     Material matTerrain, matBark, matWood, matMetal, matRock, matLeaf, matCloth, matScales, matGlow, matSand;
 
     Model propGroups[72];
+    Vec3  propGroupCenter[72];   // для отсечения по расстоянию
     int propGroupCount;
     unsigned int builtSeed;   // сид, под который построен рельеф
     Model terrain[TERRAIN_CHUNKS * TERRAIN_CHUNKS];
