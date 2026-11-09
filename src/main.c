@@ -1,6 +1,11 @@
 // ============================================================================
 //  ТИХИЙ ЗАЛИВ — main.c
 //  Атмосферный 3D-симулятор рыбалки и исследований. Русский интерфейс.
+//
+//  Запуск: TikhiyZaliv_v1.0.0.exe            — обычный режим
+//          TikhiyZaliv_v1.0.0.exe --safe     — безопасный режим (без звука и пост-эффектов)
+//          файл safe.txt рядом с .exe        — то же самое
+//  Журнал запуска: startup.log рядом с .exe (или в %APPDATA%\TikhiyZaliv)
 // ============================================================================
 #include "raylib.h"
 #include "rlgl.h"
@@ -16,12 +21,86 @@
 #include "audio/audio.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+
+#if defined(_WIN32)
+  #include <direct.h>
+  // Windows.h не подключаем: он конфликтует с типами raylib (Rectangle, CloseWindow, ShowCursor).
+  // Объявляем только то, что нужно для сообщения о фатальной ошибке.
+  __declspec(dllimport) int __stdcall MessageBoxA(void *hWnd, const char *text,
+                                                  const char *caption, unsigned int uType);
+  #ifndef MB_OK
+  #define MB_OK 0x00000000u
+  #define MB_ICONERROR 0x00000010u
+  #endif
+#endif
 
 static Game G;
 static Assets A;
 static Renderer R;
 static UI UIx;
+
+static FILE *logFile = NULL;
+static bool safeMode = false;
+static bool uiReady = false;
+
+// ------------------------------------------------------------------ журнал
+static void startup_log_open(void) {
+    char path[700];
+    const char *dir = GetApplicationDirectory();
+    snprintf(path, sizeof(path), "%sstartup.log", dir);
+    logFile = fopen(path, "w");
+    if (!logFile) {
+        const char *appdata = getenv("APPDATA");
+        if (appdata) {
+#if defined(_WIN32)
+            char d2[600];
+            snprintf(d2, sizeof(d2), "%s\\TikhiyZaliv", appdata);
+            _mkdir(d2);
+            snprintf(path, sizeof(path), "%s\\startup.log", d2);
+            logFile = fopen(path, "w");
+#endif
+        }
+    }
+    if (!logFile) logFile = fopen("startup.log", "w");
+}
+
+static void trace_to_log(int level, const char *text, va_list args) {
+    if (!logFile) return;
+    fprintf(logFile, "[R%02d] ", level);
+    vfprintf(logFile, text, args);
+    fputc('\n', logFile);
+    fflush(logFile);
+}
+
+static void logf_(const char *fmt, ...) {
+    if (!logFile) return;
+    fprintf(logFile, "[%8.2f] ", (double)GetTime());
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(logFile, fmt, ap);
+    va_end(ap);
+    fputc('\n', logFile);
+    fflush(logFile);
+}
+
+// ------------------------------------------------------------ экран загрузки
+static void boot_frame(const char *text, float progress) {
+    BeginDrawing();
+    ClearBackground((Color){ 6, 14, 18, 255 });
+    if (uiReady) UIDrawLoading(&UIx, text, progress);
+    else DrawText("Тихий Залив — загрузка...", 40, 40, 24, (Color){ 226, 178, 96, 255 });
+    EndDrawing();   // EndDrawing сам опрашивает события Windows — окно не «зависает»
+}
+
+static void on_progress(float fraction, const char *stage) {
+    boot_frame(stage, fraction);
+}
+
+// -------------------------------------------------------------------- звук
+static void audio_frame(Game *g, float dt);
 
 static void input_collect(Game *g, int *flags, Vec3 *move, Vec3 *look) {
     *flags = 0;
@@ -42,7 +121,6 @@ static void input_collect(Game *g, int *flags, Vec3 *move, Vec3 *look) {
     if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) *flags |= IN_FISH;
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) *flags |= IN_MOUSEDN;
     if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) *flags |= IN_ALT;
-    // Фрикцион
     float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
         g->fish_rod.drag = clampf(g->fish_rod.drag + wheel * 0.05f, 0.5f, 1.6f);
@@ -50,6 +128,7 @@ static void input_collect(Game *g, int *flags, Vec3 *move, Vec3 *look) {
 }
 
 static void audio_frame(Game *g, float dt) {
+    if (!AudioIsAvailable()) return;
     Vec3 dir = v3sub(g->camTarget, g->camPos);
     if (v3len2(dir) < 0.0001f) dir = v3(0, 0, 1);
     dir = v3norm(dir);
@@ -90,63 +169,127 @@ static bool load_existing(void) {
     return LoadGame(&G, G.savePath);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (strstr(argv[i], "safe") || strstr(argv[i], "nosound")) safeMode = true;
+    }
+    char safeFile[700];
+    snprintf(safeFile, sizeof(safeFile), "%ssafe.txt", GetApplicationDirectory());
+    if (FileExists(safeFile)) safeMode = true;
+
+    SetTraceLogLevel(LOG_INFO);
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
     InitWindow(1600, 900, "Тихий Залив — 3D рыбалка");
-    SetWindowMinSize(1024, 600);
+    startup_log_open();
+    SetTraceLogCallback(trace_to_log);
+
+    logf_("=== ТИХИЙ ЗАЛИВ %s (сборка 2: пошаговая загрузка) ===", TB_VERSION);
+    if (!IsWindowReady()) {
+        logf_("ОШИБКА: окно/OpenGL 3.3 недоступны");
+#if defined(_WIN32)
+        MessageBoxA(NULL,
+            "Не удалось создать окно OpenGL 3.3.\n\nОбновите драйвер видеокарты или запустите игру на ПК с поддержкой OpenGL 3.3.",
+            "Тихий Залив", MB_ICONERROR | MB_OK);
+#endif
+        if (logFile) fclose(logFile);
+        return 1;
+    }
+    logf_("Безопасный режим: %s", safeMode ? "да" : "нет");
+    logf_("Экран: %dx%d, монитор %dx%d", GetScreenWidth(), GetScreenHeight(),
+          GetMonitorWidth(GetCurrentMonitor()), GetMonitorHeight(GetCurrentMonitor()));
+
+    // Не раздуваем окно больше экрана — иначе часть интерфейса уходит за край
+    int mw = GetMonitorWidth(GetCurrentMonitor());
+    int mh = GetMonitorHeight(GetCurrentMonitor());
+    if (mw > 0 && mh > 0 && (GetScreenWidth() > mw - 40 || GetScreenHeight() > mh - 80)) {
+        SetWindowSize(mw * 3 / 4, mh * 3 / 4);
+        logf_("Окно подогнано под монитор: %dx%d", GetScreenWidth(), GetScreenHeight());
+    }
+    SetWindowMinSize(640, 400);
     SetExitKey(KEY_NULL);
-    InitAudioDevice();
     SetTargetFPS(60);
 
-    TraceLog(LOG_INFO, "=== ТИХИЙ ЗАЛИВ %s ===", TB_VERSION);
+    boot_frame("Запуск...", 0.02f);
+    logf_("Окно создано, первый кадр отрисован");
+
     PakOpen();
-    TraceLog(LOG_INFO, "Ресурсы: %s (файлов в архиве: %d)", PakGetPath(), PakCount());
+    logf_("PakOpen: %d, путь: %s, файлов: %d", (int)PakCount(), PakGetPath(), PakCount());
 
-    // Экран загрузки
-    BeginDrawing();
-    ClearBackground((Color){ 6, 14, 18, 255 });
-    EndDrawing();
+    uiReady = UIInit(&UIx);
+    logf_("UIInit: %s", uiReady ? "ок" : "шрифты не загружены");
+    boot_frame("Интерфейс готов...", 0.10f);
 
-    bool uiOk = UIInit(&UIx);
-    BeginDrawing();
-    UIDrawLoading(&UIx, "Загрузка ресурсов...", 0.15f);
-    EndDrawing();
+    // --- звук: только после первого кадра и только если устройство живо
+    if (!safeMode) {
+        boot_frame("Инициализация звука...", 0.14f);
+        logf_("InitAudioDevice...");
+        InitAudioDevice();
+        logf_("InitAudioDevice: готово (device ready = %d)", (int)IsAudioDeviceReady());
+        if (IsAudioDeviceReady()) {
+            boot_frame("Загрузка звуков и музыки...", 0.18f);
+            logf_("AudioInit...");
+            bool audioOk = AudioInit();
+            logf_("AudioInit: %s", audioOk ? "ок" : "не удалось");
+            AudioApplyLevels((AudioLevels){ G.settings.masterVolume, G.settings.musicVolume,
+                                            G.settings.sfxVolume, G.settings.ambientVolume });
+        } else {
+            AudioSetAvailable(false);
+            logf_("Звук отключён: устройство недоступно");
+        }
+    } else {
+        AudioSetAvailable(false);
+        logf_("Звук отключён безопасным режимом");
+    }
 
+    boot_frame("Генерация острова...", 0.22f);
+    logf_("SimInit...");
     SimInit(&G, 20251109u);
+    int aliveFish = 0;
+    for (int i = 0; i < MAX_FISH; i++) if (G.fish[i].alive) aliveFish++;
+    logf_("SimInit: ок (рыб %d, деревьев %d, камней %d)", aliveFish, G.terrain.treeCount, G.terrain.rockCount);
 
-    BeginDrawing();
-    UIDrawLoading(&UIx, "Сборка 3D-моделей и материалов...", 0.35f);
-    EndDrawing();
+    AssetsSetProgressCallback(on_progress);
+    boot_frame("Загрузка текстур и шейдеров...", 0.25f);
+    logf_("AssetsInit...");
     AssetsInit(&A);
+    logf_("AssetsInit: шейдеры lit=%d water=%d sky=%d blur=%d composite=%d",
+          A.litOk, A.waterOk, A.skyOk, A.blurOk, A.compositeOk);
 
-    BeginDrawing();
-    UIDrawLoading(&UIx, "Построение рельефа, воды и растительности...", 0.6f);
-    EndDrawing();
+    boot_frame("Построение мира...", 0.30f);
+    logf_("AssetsBuildWorld...");
     AssetsBuildWorld(&A, &G);
+    logf_("AssetsBuildWorld: рельеф %d, батчи %d, рыб %d", A.terrainCount, A.propGroupCount, A.fishModelCount);
+    AssetsSetProgressCallback(NULL);
 
-    BeginDrawing();
-    UIDrawLoading(&UIx, "Загрузка звуковых банков...", 0.85f);
-    EndDrawing();
-    AudioInit();
-    AudioApplyLevels((AudioLevels){ G.settings.masterVolume, G.settings.musicVolume,
-                                    G.settings.sfxVolume, G.settings.ambientVolume });
-
+    boot_frame("Подготовка пост-обработки...", 0.98f);
+    logf_("RendererInit...");
     RendererInit(&R);
+    if (safeMode) R.postEnabled = false;
+    logf_("RendererInit: пост-обработка %s", R.postEnabled ? "вкл" : "выкл");
+
     G.screen = GS_TITLE;
     BuildSavePath(&G);
-
-    BeginDrawing();
-    UIDrawLoading(&UIx, "Готово", 1.0f);
-    EndDrawing();
+    logf_("Сохранение: %s (есть: %d)", G.savePath, (int)SaveExists(G.savePath));
+    boot_frame("Готово", 1.0f);
+    logf_("Загрузка завершена за %.2f с", (double)GetTime());
 
     float fade = 1.0f;
     float titleTime = 0.0f;
     bool running = true;
+    int frames = 0;
+    float avgFrame = 1.0f / 60.0f;
+
     while (running && !WindowShouldClose()) {
         float dt = GetFrameTime();
         if (dt > 0.1f) dt = 0.1f;
         if (dt <= 0.0f) dt = 1.0f / 60.0f;
         titleTime += dt;
+        frames++;
+        avgFrame = avgFrame * 0.94f + dt * 0.06f;
+        if (frames >= 240 && frames % 600 == 0 && avgFrame > 0.042f && R.postEnabled) {
+            R.postEnabled = false;
+            logf_("Авто-качество: пост-обработка отключена (%.0f FPS)", 1.0f / avgFrame);
+        }
 
         UIResetRequests(&UIx);
         int flags = 0;
@@ -189,7 +332,6 @@ int main(void) {
             SimUpdate(&G, dt * 0.6f, 0, v3(0, 0, 0), v3(0, 0, 0));
             G.playTime = pt;
         } else {
-            // Пауза: живёт только окружение
             SimUpdateIdle(&G, dt * 0.35f);
         }
 
@@ -206,7 +348,9 @@ int main(void) {
         // Сохранение/загрузка
         if (UIx.saveRequested) {
             BuildSavePath(&G);
-            if (SaveGame(&G, G.savePath)) Toast(&G, "Сохранено: %s", G.savePath);
+            if (SaveGame(&G, G.savePath)) Toast(&G, "Сохранено");
+            else Toast(&G, "Не удалось сохранить игру");
+            logf_("Сохранение: %s", G.savePath);
         }
         if (UIx.loadRequested) {
             unsigned int savedSeed = SavePeekSeed(G.savePath);
@@ -215,11 +359,13 @@ int main(void) {
             } else if (load_existing()) {
                 G.screen = GS_PLAY;
                 Toast(&G, "Игра загружена");
+                logf_("Загрузка сохранения: ок");
             } else {
                 Toast(&G, "Сохранение не найдено");
             }
         }
         if (UIx.newGameRequested) {
+            logf_("Новая игра");
             start_new_game();
             G.screen = GS_PLAY;
         }
@@ -278,20 +424,18 @@ int main(void) {
             default: break;
         }
 
-        // Затемнение при загрузке/переходах
         if (fade > 0.0f) {
             UIDrawFade(&UIx, fade);
             fade = fmaxf(0.0f, fade - dt * 1.2f);
         }
 
-        // Курсор: в игре скрыт, в меню — виден
         if (cursorFree) {
             if (IsCursorHidden()) ShowCursor();
         } else if (!IsCursorHidden()) HideCursor();
-        if (!uiOk) TraceLog(LOG_WARNING, "Шрифты интерфейса не загружены!");
     }
 
     // ------------------------------------------------------------- завершение
+    logf_("Выход из игры");
     BuildSavePath(&G);
     if (G.screen != GS_TITLE || G.playTime > 5.0f) SaveGame(&G, G.savePath);
     RendererFree(&R);
@@ -299,7 +443,9 @@ int main(void) {
     AudioShutdown();
     UIFree(&UIx);
     PakClose();
-    CloseAudioDevice();
+    if (IsAudioDeviceReady()) CloseAudioDevice();
     CloseWindow();
+    logf_("Завершено");
+    if (logFile) fclose(logFile);
     return 0;
 }

@@ -10,7 +10,7 @@ int g_frames = 0;
 void InitWindow(int width, int height, const char *title) { ((void)0); }
 void CloseWindow(void) { ((void)0); }
 bool WindowShouldClose(void) { return g_frames > 900; }
-bool IsWindowReady(void) { return (bool){ 0 }; }
+bool IsWindowReady(void) { return true; }
 bool IsWindowFullscreen(void) { return (bool){ 0 }; }
 bool IsWindowHidden(void) { return (bool){ 0 }; }
 bool IsWindowMinimized(void) { return (bool){ 0 }; }
@@ -41,10 +41,10 @@ int GetScreenHeight(void) { return 900; }
 int GetRenderWidth(void) { return (int){ 0 }; }
 int GetRenderHeight(void) { return (int){ 0 }; }
 int GetMonitorCount(void) { return (int){ 0 }; }
-int GetCurrentMonitor(void) { return (int){ 0 }; }
+int GetCurrentMonitor(void) { return 0; }
 Vector2 GetMonitorPosition(int monitor) { return (Vector2){ 0 }; }
-int GetMonitorWidth(int monitor) { return (int){ 0 }; }
-int GetMonitorHeight(int monitor) { return (int){ 0 }; }
+int GetMonitorWidth(int monitor) { return 1920; }
+int GetMonitorHeight(int monitor) { return 1080; }
 int GetMonitorPhysicalWidth(int monitor) { return (int){ 0 }; }
 int GetMonitorPhysicalHeight(int monitor) { return (int){ 0 }; }
 int GetMonitorRefreshRate(int monitor) { return (int){ 0 }; }
@@ -140,7 +140,7 @@ const char * GetFileNameWithoutExt(const char *filePath) { return (const char *)
 const char * GetDirectoryPath(const char *filePath) { return (const char *){ 0 }; }
 const char * GetPrevDirectoryPath(const char *dirPath) { return (const char *){ 0 }; }
 const char * GetWorkingDirectory(void) { return (const char *){ 0 }; }
-const char * GetApplicationDirectory(void) { return (const char *){ 0 }; }
+const char * GetApplicationDirectory(void) { return "./"; }
 int MakeDirectory(const char *dirPath) { return (int){ 0 }; }
 bool ChangeDirectory(const char *dir) { return (bool){ 0 }; }
 bool IsPathFile(const char *path) { return (bool){ 0 }; }
@@ -524,7 +524,7 @@ RayCollision GetRayCollisionTriangle(Ray ray, Vector3 p1, Vector3 p2, Vector3 p3
 RayCollision GetRayCollisionQuad(Ray ray, Vector3 p1, Vector3 p2, Vector3 p3, Vector3 p4) { return (RayCollision){ 0 }; }
 void InitAudioDevice(void) { ((void)0); }
 void CloseAudioDevice(void) { ((void)0); }
-bool IsAudioDeviceReady(void) { return (bool){ 0 }; }
+bool IsAudioDeviceReady(void) { return true; }
 void SetMasterVolume(float volume) { ((void)0); }
 float GetMasterVolume(void) { return (float){ 0 }; }
 Wave LoadWave(const char *fileName) { return (Wave){ 0 }; }

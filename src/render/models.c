@@ -80,6 +80,13 @@ static float hashf(float x, float z) {
     return h - floorf(h);
 }
 
+// ------------------------------------------------------------------- прогресс
+static AssetsProgressFn s_progress = NULL;
+void AssetsSetProgressCallback(AssetsProgressFn fn) { s_progress = fn; }
+static void prog(float f, const char *stage) {
+    if (s_progress) s_progress(f, stage);
+}
+
 // -------------------------------------------------------------------- рельеф
 static Color terrain_color(const Game *g, float x, float z, float h, float slope) {
     (void)g;
@@ -148,12 +155,13 @@ static void build_terrain_chunks(Assets *a, Game *g) {
             Material mat = a->matTerrain;
             a->terrain[a->terrainCount++] = BuildModel(&mesh, &mat, 1);
             mb_free(&mb);
+            prog(0.04f + 0.24f * (float)a->terrainCount / 16.0f, "Рельеф острова...");
         }
     }
 }
 
 static void build_water(Assets *a, Game *g) {
-    const int seg = 140;
+    const int seg = 112;
     const float size = 900.0f;
     MB mb;
     mb_init(&mb, (seg + 1) * (seg + 1) + 16, seg * seg * 6 + 16, "water");
@@ -176,6 +184,7 @@ static void build_water(Assets *a, Game *g) {
         }
     }
     Mesh mesh = mb_build(&mb);
+    prog(0.30f, "Вода и волны...");
     // Второй набор UV: глубина воды и близость берега для шейдера
     mesh.texcoords2 = (float *)malloc(sizeof(float) * 2 * mesh.vertexCount);
     for (int i = 0; i < mesh.vertexCount; i++) {
@@ -909,6 +918,7 @@ bool AssetsInit(Assets *a) {
     a->matGlow = MakeLitMaterial(a, a->texGlow);
     a->matSand = MakeLitMaterial(a, a->texSand);
 
+    prog(0.55f, "Материалы и освещение...");
     Shader s = a->shLit;
     a->uMode = uloc(s, "uMode");
     a->uEmissive = uloc(s, "uEmissive");
@@ -979,8 +989,13 @@ void AssetsBuildWorld(Assets *a, Game *g) {
     build_props(a);
     build_human(a);
     build_animals(a);
+    prog(0.86f, "Модели рыб...");
     a->fishModelCount = FishSpeciesCount();
-    for (int i = 0; i < a->fishModelCount; i++) build_fish(a, i);
+    for (int i = 0; i < a->fishModelCount; i++) {
+        build_fish(a, i);
+        prog(0.86f + 0.10f * (float)(i + 1) / (float)a->fishModelCount, "Модели рыб...");
+    }
+    prog(0.97f, "Жители и животные...");
     TraceLog(LOG_INFO, "ASSETS: мир построен, рыб-моделей %d", a->fishModelCount);
 }
 
@@ -1199,6 +1214,7 @@ void AssetsBuildPropGroups(Assets *a, Game *g) {
                 }
             }
             mb_free(&trunk); mb_free(&leaf); mb_free(&rock); mb_free(&reed); mb_free(&grass);
+            prog(0.45f + 0.35f * (float)(cz * GRID + cx + 1) / (float)(GRID * GRID), "Растительность и камни...");
         }
     }
     TraceLog(LOG_INFO, "ASSETS: групп декора %d (деревьев %d, камней %d, камыша %d)",

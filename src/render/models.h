@@ -58,7 +58,10 @@ typedef struct {
     int cBloom, cBlur, cRes, cDof, cVig, cSat, cCon, cTime, cUnder, cFlash, cTint;
 } Assets;
 
+typedef void (*AssetsProgressFn)(float fraction, const char *stage);
+
 bool AssetsInit(Assets *a);
+void AssetsSetProgressCallback(AssetsProgressFn fn);
 void AssetsBuildWorld(Assets *a, Game *g);
 void AssetsBuildPropGroups(Assets *a, Game *g);
 void AssetsFree(Assets *a);

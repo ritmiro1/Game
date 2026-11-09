@@ -46,6 +46,12 @@ MANUAL = {
 }
 
 MANUAL.update({
+ "bool IsWindowReady": "return true;",
+ "bool IsAudioDeviceReady": "return true;",
+ "const char *GetApplicationDirectory": "return \"./\";",
+ "int GetMonitorWidth": "return 1920;",
+ "int GetMonitorHeight": "return 1080;",
+ "int GetCurrentMonitor": "return 0;",
  "int GetCodepointNext":
    "{ unsigned char c0 = (unsigned char)text[0]; int sz = 1; int cp = c0; if (c0 >= 0xF0) { sz = 4; cp = c0 & 0x07; } else if (c0 >= 0xE0) { sz = 3; cp = c0 & 0x0F; } else if (c0 >= 0xC0) { sz = 2; cp = c0 & 0x1F; } for (int i = 1; i < sz; i++) cp = (cp << 6) | ((unsigned char)text[i] & 0x3F); if (codepointSize) *codepointSize = sz; return cp; }",
  "int GetCodepointCount":

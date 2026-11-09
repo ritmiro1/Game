@@ -97,7 +97,18 @@ static Music load_music(const char *name, bool *ok, unsigned char **keepData) {
     return m;
 }
 
+static bool s_available = false;
+
+void AudioSetAvailable(bool available) { s_available = available; }
+bool AudioIsAvailable(void) { return s_available; }
+
 bool AudioInit(void) {
+    if (!IsAudioDeviceReady()) {
+        TraceLog(LOG_WARNING, "AUDIO: аудиоустройство недоступно — звук отключён");
+        s_available = false;
+        return false;
+    }
+    s_available = true;
     memset(&A, 0, sizeof(A));
     A.levels.master = 0.9f;
     A.levels.music = 0.55f;
@@ -124,7 +135,8 @@ bool AudioInit(void) {
     for (int i = 0; i < LOOP_COUNT; i++) if (A.loops[i].loaded) loaded++;
     for (int i = 0; i < MUS_COUNT; i++) if (A.trackLoaded[i]) loaded++;
     TraceLog(LOG_INFO, "AUDIO: загружено %d звуковых потоков", loaded);
-    return loaded > 10;
+    if (loaded <= 0) { s_available = false; return false; }
+    return true;
 }
 
 void AudioShutdown(void) {
@@ -137,6 +149,7 @@ void AudioShutdown(void) {
 }
 
 void AudioApplyLevels(AudioLevels lv) {
+    if (!s_available) return;
     A.levels = lv;
     float m = lv.master;
     for (int i = 0; i < MUS_COUNT; i++) SetMusicVolume(A.tracks[i], 0.0001f);
@@ -159,6 +172,7 @@ static Vector3 g_listener = { 0, 0, 0 };
 static Vector3 g_fwd = { 0, 0, 1 };
 
 void AudioPlay(SfxId id, Vector3 pos, float volume, float pitch) {
+    if (!s_available) return;
     if (!A.ready || id < 0 || id >= SFX_COUNT || !A.sfxLoaded[id]) return;
     float pan = 0.5f;
     float atten = spatial(pos, g_listener, g_fwd, &pan);
@@ -171,6 +185,7 @@ void AudioPlay(SfxId id, Vector3 pos, float volume, float pitch) {
 }
 
 void AudioPlay2D(SfxId id, float volume, float pitch) {
+    if (!s_available) return;
     if (!A.ready || id < 0 || id >= SFX_COUNT || !A.sfxLoaded[id]) return;
     SetSoundVolume(A.sfx[id], volume * A.levels.sfx * A.levels.master);
     SetSoundPan(A.sfx[id], 0.5f);
@@ -179,6 +194,7 @@ void AudioPlay2D(SfxId id, float volume, float pitch) {
 }
 
 void AudioSetMusic(MusicId id) {
+    if (!s_available) return;
     if (id < 0 || id >= MUS_COUNT) return;
     A.current = id;
 }

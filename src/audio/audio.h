@@ -19,6 +19,8 @@ typedef struct {
 } AudioLevels;
 
 bool AudioInit(void);
+void AudioSetAvailable(bool available);   // false — звуковая подсистема отключена
+bool AudioIsAvailable(void);
 void AudioShutdown(void);
 void AudioApplyLevels(AudioLevels lv);
 
