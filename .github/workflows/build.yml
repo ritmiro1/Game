@@ -91,6 +91,8 @@ jobs:
 
       - name: Embed runtime into single EXE
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
           $build = "app/VidDesk/bin/Release/net48"
@@ -114,8 +116,15 @@ jobs:
           $resArg = "/resource:$build/VidDesk.runtime.zip,VidDesk.runtime.zip"
           $iconArg = "/win32icon:app/VidDesk/app.ico"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          & dotnet $env:CSC_DLL /nologo /target:winexe /platform:anycpu /optimize+ /debug- /out:dist/VidDesk.exe $resArg $iconArg $refArgs $sources
-          if ($LASTEXITCODE -ne 0) { throw "csc failed" }
+          $cscOut = & dotnet $env:CSC_DLL /nologo /target:winexe /platform:anycpu /optimize+ /debug- /out:dist/VidDesk.exe $resArg $iconArg $refArgs $sources 2>&1 | Out-String
+          Write-Host $cscOut
+          if ($LASTEXITCODE -ne 0) {
+            try {
+              ("Single-file step failed (run $env:GITHUB_RUN_ID):`n`n~~~`n" + $cscOut.Substring(0, [Math]::Min(60000, $cscOut.Length)) + "`n~~~") | Out-File -Encoding utf8 step-log.md
+              gh pr comment 1 --body-file step-log.md
+            } catch { Write-Host "could not post: $_" }
+            throw "csc failed"
+          }
           Get-ChildItem dist | Format-List Name, Length
           if (-not (Test-Path "dist/VidDesk.exe")) { throw "single-file build missing" }
 
