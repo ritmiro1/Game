@@ -105,6 +105,7 @@ jobs:
           $sources = Get-ChildItem -Path "app/VidDesk" -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch '\\obj\\|\\bin\\' } | ForEach-Object { $_.FullName }
           $refs = @()
           $framework = "C:/Windows/Microsoft.NET/Framework64/v4.0.30319"
+          $refs += "$framework/mscorlib.dll"
           $refs += "$framework/System.dll"
           $refs += "$framework/System.Core.dll"
           $refs += "$framework/System.Drawing.dll"
@@ -112,6 +113,9 @@ jobs:
           $refs += "$framework/System.Runtime.Serialization.dll"
           $refs += "$framework/System.Xml.dll"
           $refs += "$framework/Microsoft.CSharp.dll"
+          $refs += "$framework/System.Configuration.dll"
+          $refs += "$framework/System.IO.Compression.dll"
+          $refs += "$framework/System.IO.Compression.FileSystem.dll"
           $refArgs = $refs | ForEach-Object { "/reference:$($_)" }
           $resArg = "/resource:$build/VidDesk.runtime.zip,VidDesk.runtime.zip"
           $iconArg = "/win32icon:app/VidDesk/app.ico"
