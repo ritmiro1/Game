@@ -90,20 +90,19 @@ namespace VidDesk.Ui
                     _window = new MainWindow();
                     Trace2.Step("shell: main window built");
                 }
+                if (_window.WindowState == FormWindowState.Minimized)
+                {
+                    _window.WindowState = FormWindowState.Normal;
+                }
                 _window.Show();
-            if (_window.WindowState == FormWindowState.Minimized)
-            {
-                _window.WindowState = FormWindowState.Normal;
-            }
                 _window.Activate();
             }
             catch (Exception ex)
             {
                 Trace2.Write("show window failed: " + ex);
-                MessageBox.Show("Не удалось открыть окно VidDesk:
-" + ex.Message + "
-
-Лог: " + Trace2.Path,
+                MessageBox.Show(
+                    "Не удалось открыть окно VidDesk:" + Environment.NewLine + ex.Message
+                    + Environment.NewLine + Environment.NewLine + "Лог: " + Trace2.Path,
                     "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
