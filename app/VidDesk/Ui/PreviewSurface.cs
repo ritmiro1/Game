@@ -9,6 +9,16 @@ namespace VidDesk.Ui
     /// Silent inline preview that plays the selected clip inside the main window,
     /// using a chromeless surface window tracked to the preview host rectangle.
     /// </summary>
+    internal sealed class PreviewForm : Form
+    {
+        public PreviewForm()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+    }
+
     internal sealed class PreviewSurface : IDisposable
     {
         private Form _form;
@@ -48,13 +58,12 @@ namespace VidDesk.Ui
         private void EnsureForm(IWin32Window owner)
         {
             if (_form != null && !_form.IsDisposed) { return; }
-            _form = new Form
+            _form = new PreviewForm
             {
                 FormBorderStyle = FormBorderStyle.None,
                 ShowInTaskbar = false,
                 StartPosition = FormStartPosition.Manual,
-                BackColor = Color.Black,
-                DoubleBuffered = true
+                BackColor = Color.Black
             };
             if (owner != null) { _form.Show(owner); } else { _form.Show(); }
         }
