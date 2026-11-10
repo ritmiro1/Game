@@ -57,6 +57,22 @@ namespace VidDesk.Native
         /// Root that hosts wallpaper windows: "WorkerW" sitting immediately below the
         /// desktop icon view, or Program Manager as a fallback.
         /// </summary>
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        /// <summary>
+        /// Asks Explorer to spawn the wallpaper host window. Without this request some
+        /// Windows builds keep icons and wallpaper in one window.
+        /// </summary>
+        internal static void RequestWallpaperHost()
+        {
+            IntPtr progman = FindWindow("Progman", null);
+            if (progman == IntPtr.Zero) { return; }
+            SendMessage(progman, 0x052C, new IntPtr(0xD), IntPtr.Zero);
+            SendMessage(progman, 0x052C, new IntPtr(0xD), new IntPtr(1));
+            System.Threading.Thread.Sleep(120);
+        }
+
         internal static IntPtr GetWallpaperParent()
         {
             IntPtr progman = FindWindow("Progman", null);

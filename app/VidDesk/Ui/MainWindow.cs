@@ -27,7 +27,10 @@ namespace VidDesk.Ui
 
         private readonly Dictionary<string, Bitmap> _thumbs = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
         private readonly ImageList _tiles = new ImageList { ImageSize = new Size(176, 99), ColorDepth = ColorDepth.Depth32Bit };
+        private readonly PreviewSurface _preview;
         private bool _syncing;
+        private readonly System.Windows.Forms.Timer _cycle;
+        private readonly Random _random = new Random();
 
         public MainWindow()
         {
@@ -158,11 +161,24 @@ namespace VidDesk.Ui
             _playlist.CheckedChanged += (s, e) => PlaylistChanged();
             _silent.CheckedChanged += (s, e) => SilentChanged();
 
+            _preview = new PreviewSurface(Program.Engine);
+
             LoadLibrary();
             Program.Wallpaper.StateChanged += (s, e) => UpdateStatus();
 
+            _cycle = new System.Windows.Forms.Timer { Interval = 1000 };
+            _cycle.Tick += (s, e) => CycleTick();
+            _cycle.Start();
+            _cycleStart = DateTime.UtcNow;
+
             Resize += (s, e) => LayoutPreview();
+            Move += (s, e) => LayoutPreview();
             Shown += (s, e) => { LayoutPreview(); UpdateStatus(); };
+            ResizeBegin += (s, e) => { if (_preview != null) _preview.Hide(); };
+            ResizeEnd += (s, e) => LayoutPreview();
+            Deactivate += (s, e) => { if (_preview != null) _preview.Hide(); };
+            Activated += (s, e) => SyncFromSelection();
+            VisibleChanged += (s, e) => { if (!Visible && _preview != null) { _preview.Hide(); } };
             FormClosing += OnClosing;
             KeyDown += (s, e) => { if (e.KeyCode == Keys.F5) ApplySelected(); };
         }
@@ -219,6 +235,26 @@ namespace VidDesk.Ui
             silent.Checked = Program.State.SilentMode;
             props.Controls.Add(silent);
 
+            CheckBox autoRun = new CheckBox { Text = "Запускать с Windows", ForeColor = Pal.Text, Location = new Point(680, 144), AutoSize = true, FlatStyle = FlatStyle.Flat };
+            autoRun.Checked = Program.State.AutoStart;
+            autoRun.CheckedChanged += (s, e) =>
+            {
+                Program.State.AutoStart = autoRun.Checked;
+                Program.EnableAutoStart(autoRun.Checked);
+                SettingsStore.Save(Program.State);
+            };
+            props.Controls.Add(autoRun);
+
+            CheckBox rotate = new CheckBox { Text = "Ротация каждые 5 минут", ForeColor = Pal.Text, Location = new Point(680, 170), AutoSize = true, FlatStyle = FlatStyle.Flat };
+            rotate.Checked = Program.State.CycleSeconds > 0;
+            rotate.CheckedChanged += (s, e) =>
+            {
+                Program.State.CycleSeconds = rotate.Checked ? 300 : 0;
+                _cycleStart = DateTime.UtcNow;
+                SettingsStore.Save(Program.State);
+            };
+            props.Controls.Add(rotate);
+
             Label hint = new Label
             {
                 Text = "Громкость до 500 % (усиление) · F5 — применить · ПКМ по значку в трее — меню",
@@ -265,7 +301,58 @@ namespace VidDesk.Ui
                 h = _previewHost.Height;
                 w = (int)(h * 16.0 / 9.0);
             }
-            _previewHint.Bounds = new Rectangle((_previewHost.Width - w) / 2, (_previewHost.Height - h) / 2, w, h);
+            _previewHint.Bounds = new Rectangle((_previewHost.Width - w) / 2, (int)((_previewHost.Height - h) * 0.42), w, h);
+
+            if (_preview != null && Visible && WindowState != FormWindowState.Minimized)
+            {
+                Rectangle screen = _previewHost.RectangleToScreen(_previewHint.Bounds);
+                _preview.SyncPosition(screen);
+            }
+        }
+
+        private void StartPreview(VideoEntry entry)
+        {
+            if (entry == null || _preview == null) { return; }
+            LayoutPreview();
+            _previewHint.Text = "";
+            Rectangle screen = _previewHost.RectangleToScreen(_previewHint.Bounds);
+            _preview.SyncPosition(screen);
+            _preview.Show(entry.File, this);
+            _preview.SyncPosition(screen);
+        }
+
+        private DateTime _cycleStart;
+        private void CycleTick()
+        {
+            if (!Program.State.WallpaperEnabled || Program.State.CycleSeconds <= 0) { return; }
+            if (!Program.Wallpaper.IsActive) { return; }
+            if ((DateTime.UtcNow - _cycleStart).TotalSeconds < Program.State.CycleSeconds) { return; }
+            _cycleStart = DateTime.UtcNow;
+
+            List<VideoEntry> pool = new List<VideoEntry>();
+            foreach (VideoEntry e in Program.State.Library)
+            {
+                if (e.Playlist && System.IO.File.Exists(e.File)) { pool.Add(e); }
+            }
+            if (pool.Count == 0) { return; }
+            VideoEntry next;
+            if (Program.State.Shuffle)
+            {
+                next = pool[_random.Next(pool.Count)];
+            }
+            else
+            {
+                int idx = pool.FindIndex(x => string.Equals(x.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase));
+                next = pool[(idx + 1 + pool.Count) % pool.Count];
+            }
+            try
+            {
+                Program.State.ActiveFile = next.File;
+                Program.Wallpaper.Play(next, Program.State.SilentMode);
+                SelectActive();
+                SettingsStore.Save(Program.State);
+            }
+            catch { }
         }
 
         private void LoadLibrary()
@@ -368,6 +455,7 @@ namespace VidDesk.Ui
                 _playlist.Checked = e.Playlist;
             }
             finally { _syncing = false; }
+            StartPreview(e);
         }
 
         private void VolumeChanged()
@@ -524,7 +612,7 @@ namespace VidDesk.Ui
             string s = Program.Wallpaper.IsActive
                 ? "● Обои запущены: " + Path.GetFileName(Program.Wallpaper.CurrentFile)
                 : "○ Обои остановлены";
-            _status.Text = s + "\nVLC: " + Native.VlcEngine.Version;
+            _status.Text = s + "\n" + "Движок: VLC " + Native.VlcEngine.Version + " · колесо — громкость";
             _status.ForeColor = Program.Wallpaper.IsActive ? Pal.Accent : Pal.Dim;
         }
 
@@ -545,6 +633,7 @@ namespace VidDesk.Ui
             }
             else
             {
+                if (_preview != null) { _preview.Dispose(); }
                 SettingsStore.Save(Program.State);
             }
         }

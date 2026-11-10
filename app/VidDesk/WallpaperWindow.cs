@@ -42,6 +42,7 @@ namespace VidDesk
 
         public void AttachToDesktop()
         {
+            DesktopHost.RequestWallpaperHost();
             IntPtr host = DesktopHost.GetWallpaperParent();
             Rectangle bounds = DesktopHost.VirtualDesktop();
             DesktopHost.AttachAsChild(Handle, host, bounds.X, bounds.Y, bounds.Width, bounds.Height);

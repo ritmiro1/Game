@@ -37,10 +37,19 @@ namespace VidDesk.Ui
             _watcher.Tick += (s, e) => Watch();
             _watcher.Start();
 
+            RestoreActiveWallpaper();
             if (!HasFlag(args, "--tray")) { ShowWindow(); }
-            else { Program.Wallpaper.Play(Program.State.Active, Program.State.SilentMode); }
 
             MenuItemRestore();
+        }
+
+        private void RestoreActiveWallpaper()
+        {
+            if (!Program.State.WallpaperEnabled) { return; }
+            VideoEntry active = Program.State.Active;
+            if (active == null) { return; }
+            try { Program.Wallpaper.Play(active, Program.State.SilentMode); }
+            catch { }
         }
 
         private void MenuItemRestore()
