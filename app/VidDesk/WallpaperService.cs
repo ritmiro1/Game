@@ -30,10 +30,13 @@ namespace VidDesk
             if (entry == null || !File.Exists(entry.File)) { throw new FileNotFoundException("Видеофайл не найден", entry == null ? "" : entry.File); }
             Stop();
 
+            Trace2.Write("wallpaper: play " + entry.File);
             _entry = entry;
             _window = new WallpaperWindow(false);
             _window.Show();
+            Trace2.Write("wallpaper: surface window created");
             _window.AttachToDesktop();
+            Trace2.Write("wallpaper: attached=" + _window.Attached);
             _surface = _engine.CreatePlayer();
             _surface.BindWindow(_window.SurfaceHandle);
             _surface.Load(entry.File, true, silent || entry.Muted || entry.Volume <= 0);

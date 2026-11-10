@@ -78,7 +78,9 @@ namespace VidDesk.Native
         public void BindWindow(IntPtr hwnd)
         {
             if (_player == IntPtr.Zero) { return; }
-            VlcApi.libvlc_media_player_set_hwnd(_player, hwnd);
+            Trace2.Write("vlc: set_hwnd -> " + hwnd.ToString("X"));
+            int rc = VlcApi.libvlc_media_player_set_hwnd(_player, hwnd);
+            Trace2.Write("vlc: set_hwnd rc=" + rc);
         }
 
         public bool Muted
@@ -119,6 +121,7 @@ namespace VidDesk.Native
         public void Load(string path, bool loop, bool mute)
         {
             if (_player == IntPtr.Zero) { return; }
+            Trace2.Write("vlc: load " + path);
             ReleaseMedia();
             _media = VlcApi.libvlc_media_new_path(_instance, path);
             if (_media == IntPtr.Zero)
@@ -134,7 +137,9 @@ namespace VidDesk.Native
 
         public void Play()
         {
-            if (_player != IntPtr.Zero) { VlcApi.libvlc_media_player_play(_player); }
+            if (_player == IntPtr.Zero) { return; }
+            int rc = VlcApi.libvlc_media_player_play(_player);
+            Trace2.Write("vlc: play rc=" + rc);
         }
 
         public void Pause()

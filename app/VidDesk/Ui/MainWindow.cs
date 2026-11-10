@@ -27,8 +27,9 @@ namespace VidDesk.Ui
 
         private readonly Dictionary<string, Bitmap> _thumbs = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
         private readonly ImageList _tiles = new ImageList { ImageSize = new Size(176, 99), ColorDepth = ColorDepth.Depth32Bit };
-        private readonly PreviewSurface _preview;
+        private PreviewSurface _preview;
         private bool _syncing;
+        private bool _ready;
         private readonly System.Windows.Forms.Timer _cycle;
         private readonly Random _random = new Random();
 
@@ -214,10 +215,18 @@ namespace VidDesk.Ui
             _playlist.CheckedChanged += (s, e) => PlaylistChanged();
             _silent.CheckedChanged += (s, e) => SilentChanged();
 
-            _preview = new PreviewSurface(Program.Engine);
+            if (Program.Engine != null)
+            {
+                _preview = new PreviewSurface(Program.Engine);
+            }
+            else
+            {
+                _previewHint.Text = "Медиадвижок не загрузился.\n" + (Program.LastError ?? "Подробности в логе.") 
+                    + "\nЛог: " + Trace2.Path;
+            }
 
             LoadLibrary();
-            Program.Wallpaper.StateChanged += (s, e) => UpdateStatus();
+            if (Program.Wallpaper != null) { Program.Wallpaper.StateChanged += (s, e) => UpdateStatus(); }
 
             _cycle = new System.Windows.Forms.Timer { Interval = 1000 };
             _cycle.Tick += (s, e) => CycleTick();
@@ -226,7 +235,14 @@ namespace VidDesk.Ui
 
             Resize += (s, e) => LayoutPreview();
             Move += (s, e) => LayoutPreview();
-            Shown += (s, e) => { LayoutPreview(); UpdateStatus(); };
+            Shown += (s, e) =>
+            {
+                Trace2.Step("main: shown");
+                _ready = true;
+                LayoutPreview();
+                UpdateStatus();
+                StartPreview(Selected);
+            };
             ResizeBegin += (s, e) => { if (_preview != null) _preview.Hide(); };
             ResizeEnd += (s, e) => LayoutPreview();
             Deactivate += (s, e) => { if (_preview != null) _preview.Hide(); };
@@ -331,7 +347,7 @@ namespace VidDesk.Ui
             FlatBtn stop = new FlatBtn { Text = "Остановить", Width = 108, Location = new Point(218, 6), Ghost = true };
             stop.Click += (s, e) =>
             {
-                Program.Wallpaper.Stop();
+                if (Program.Wallpaper != null) { Program.Wallpaper.Stop(); }
                 Program.State.WallpaperEnabled = false;
                 SettingsStore.Save(Program.State);
             };
@@ -345,7 +361,7 @@ namespace VidDesk.Ui
 
         private void LayoutPreview()
         {
-            if (_previewHost.Width < 50) { return; }
+            if (_previewHost == null || _previewHost.Width < 50) { return; }
             // 16:9 letterbox inside the host.
             int w = _previewHost.Width;
             int h = (int)(w * 9.0 / 16.0);
@@ -354,29 +370,52 @@ namespace VidDesk.Ui
                 h = _previewHost.Height;
                 w = (int)(h * 16.0 / 9.0);
             }
+            if (w < 2 || h < 2) { return; }
             _previewHint.Bounds = new Rectangle((_previewHost.Width - w) / 2, (int)((_previewHost.Height - h) * 0.42), w, h);
 
-            if (_preview != null && Visible && WindowState != FormWindowState.Minimized)
+            try
             {
-                Rectangle screen = _previewHost.RectangleToScreen(_previewHint.Bounds);
-                _preview.SyncPosition(screen);
+                if (_preview != null && Visible && WindowState != FormWindowState.Minimized)
+                {
+                    Rectangle screen = _previewHost.RectangleToScreen(_previewHint.Bounds);
+                    _preview.SyncPosition(screen);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace2.Write("preview layout failed: " + ex.Message);
             }
         }
 
         private void StartPreview(VideoEntry entry)
         {
+            if (!_ready) { return; }
             if (entry == null || _preview == null) { return; }
-            LayoutPreview();
-            _previewHint.Text = "";
-            Rectangle screen = _previewHost.RectangleToScreen(_previewHint.Bounds);
-            _preview.SyncPosition(screen);
-            _preview.Show(entry.File, this);
-            _preview.SyncPosition(screen);
+            try
+            {
+                LayoutPreview();
+                _previewHint.Text = "";
+                Rectangle screen = _previewHost.RectangleToScreen(_previewHint.Bounds);
+                _preview.SyncPosition(screen);
+                _preview.Show(entry.File, this);
+                _preview.SyncPosition(screen);
+            }
+            catch (Exception ex)
+            {
+                Trace2.Write("preview failed: " + ex.Message);
+            }
         }
 
         private DateTime _cycleStart;
         private void CycleTick()
         {
+            try { CycleTickCore(); }
+            catch (Exception ex) { Trace2.Write("rotation failed: " + ex.Message); }
+        }
+
+        private void CycleTickCore()
+        {
+            if (Program.Wallpaper == null) { return; }
             if (!Program.State.WallpaperEnabled || Program.State.CycleSeconds <= 0) { return; }
             if (!Program.Wallpaper.IsActive) { return; }
             if ((DateTime.UtcNow - _cycleStart).TotalSeconds < Program.State.CycleSeconds) { return; }
@@ -517,7 +556,7 @@ namespace VidDesk.Ui
             VideoEntry e = Selected;
             if (e == null) { return; }
             e.Volume = _volume.Value;
-            if (!_syncing && string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
+            if (!_syncing && Program.Wallpaper != null && string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
             {
                 Program.Wallpaper.ApplyVolume();
             }
@@ -530,7 +569,7 @@ namespace VidDesk.Ui
             VideoEntry e = Selected;
             if (e == null) { return; }
             e.Speed = _speed.Value;
-            if (!_syncing && string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
+            if (!_syncing && Program.Wallpaper != null && string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
             {
                 Program.Wallpaper.ApplySpeed(e.Speed);
             }
@@ -542,7 +581,7 @@ namespace VidDesk.Ui
             VideoEntry e = Selected;
             if (e == null || _syncing) { return; }
             e.Fit = _fit.SelectedIndex == 1 ? "contain" : (_fit.SelectedIndex == 2 ? "stretch" : "cover");
-            if (string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
+            if (Program.Wallpaper != null && string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
             {
                 Program.Wallpaper.ApplyFit(e.Fit);
             }
@@ -554,7 +593,7 @@ namespace VidDesk.Ui
             VideoEntry e = Selected;
             if (e == null || _syncing) { return; }
             e.EqualizerPreset = _eq.SelectedIndex;
-            if (string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
+            if (Program.Wallpaper != null && string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
             {
                 Program.Wallpaper.ApplyEqualizer(e.EqualizerPreset);
             }
@@ -566,7 +605,7 @@ namespace VidDesk.Ui
             VideoEntry e = Selected;
             if (e == null || _syncing) { return; }
             e.Muted = _muted.Checked;
-            if (string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
+            if (Program.Wallpaper != null && string.Equals(e.File, Program.State.ActiveFile, StringComparison.OrdinalIgnoreCase))
             {
                 Program.Wallpaper.ApplyVolume();
             }
@@ -584,7 +623,7 @@ namespace VidDesk.Ui
         private void SilentChanged()
         {
             Program.State.SilentMode = _silent.Checked;
-            Program.Wallpaper.SetMutedOverride(_silent.Checked);
+            if (Program.Wallpaper != null) { Program.Wallpaper.SetMutedOverride(_silent.Checked); }
             Schedule();
         }
 
@@ -628,7 +667,8 @@ namespace VidDesk.Ui
             if (e == null) { return; }
             if (MessageBox.Show(this, "Убрать «" + e.Display + "» из библиотеки?", "VidDesk",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) { return; }
-            if (string.Equals(e.File, Program.Wallpaper.CurrentFile, StringComparison.OrdinalIgnoreCase))
+            if (Program.Wallpaper != null
+                && string.Equals(e.File, Program.Wallpaper.CurrentFile, StringComparison.OrdinalIgnoreCase))
             {
                 Program.Wallpaper.Stop();
             }
@@ -644,6 +684,13 @@ namespace VidDesk.Ui
             {
                 MessageBox.Show(this, "Сначала добавьте видео в библиотеку.", "VidDesk",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (Program.Wallpaper == null)
+            {
+                MessageBox.Show(this, "Медиадвижок не загружен, обои запустить нельзя.\n"
+                    + (Program.LastError ?? "") + "\nЛог: " + Trace2.Path,
+                    "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
             try
@@ -662,11 +709,14 @@ namespace VidDesk.Ui
 
         private void UpdateStatus()
         {
-            string s = Program.Wallpaper.IsActive
+            bool active = Program.Wallpaper != null && Program.Wallpaper.IsActive;
+            string s = active
                 ? "● Обои запущены: " + Path.GetFileName(Program.Wallpaper.CurrentFile)
                 : "○ Обои остановлены";
-            _status.Text = s + "\n" + "Движок: VLC " + Native.VlcEngine.Version + " · колесо — громкость";
-            _status.ForeColor = Program.Wallpaper.IsActive ? Pal.Accent : Pal.Dim;
+            _status.Text = s + "\n" + (Program.Engine == null
+                ? "Движок не загружен — см. лог"
+                : "Движок: VLC " + Native.VlcEngine.Version + " · F5 — применить");
+            _status.ForeColor = active ? Pal.Accent : Pal.Dim;
         }
 
         private void OpenDataFolder()

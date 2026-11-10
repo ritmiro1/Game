@@ -13,21 +13,31 @@ namespace VidDesk.Ui
 
         public TrayContext(string[] args)
         {
-            _tray = new NotifyIcon
+            Trace2.Step("shell: tray");
+            ContextMenuStrip menu = new ContextMenuStrip();
+            try
             {
-                Icon = AppIcon.Load(),
-                Text = "VidDesk — живые обои",
-                Visible = true
-            };
+                _tray = new NotifyIcon
+                {
+                    Icon = AppIcon.Load(),
+                    Text = "VidDesk — живые обои",
+                    Visible = true
+                };
+            }
+            catch (Exception ex)
+            {
+                // Tray registration can fail (locked Explorer, restricted session).
+                Trace2.Write("tray failed: " + ex.Message);
+                _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = false };
+            }
             _tray.DoubleClick += (s, e) => ShowWindow();
             _tray.MouseClick += (s, e) =>
             {
                 if (e.Button == MouseButtons.Left) { ShowWindow(); }
             };
 
-            ContextMenuStrip menu = new ContextMenuStrip();
             menu.Items.Add("Открыть VidDesk", null, (s, e) => ShowWindow());
-            menu.Items.Add("Остановить обои", null, (s, e) => Program.Wallpaper.Stop());
+            menu.Items.Add("Остановить обои", null, (s, e) => { if (Program.Wallpaper != null) { Program.Wallpaper.Stop(); } });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Выход", null, (s, e) => ExitApp());
             _tray.ContextMenuStrip = menu;
@@ -37,6 +47,7 @@ namespace VidDesk.Ui
             _watcher.Tick += (s, e) => Watch();
             _watcher.Start();
 
+            Trace2.Step("shell: restore wallpaper");
             RestoreActiveWallpaper();
             if (!HasFlag(args, "--tray")) { ShowWindow(); }
 
@@ -45,16 +56,18 @@ namespace VidDesk.Ui
 
         private void RestoreActiveWallpaper()
         {
+            if (Program.Wallpaper == null || Program.State == null) { return; }
             if (!Program.State.WallpaperEnabled) { return; }
             VideoEntry active = Program.State.Active;
             if (active == null) { return; }
+            if (Program.Wallpaper == null) { return; }
             try { Program.Wallpaper.Play(active, Program.State.SilentMode); }
-            catch { }
+            catch (Exception ex) { Trace2.Write("restore wallpaper failed: " + ex.Message); }
         }
 
         private void MenuItemRestore()
         {
-            if (Program.State.AutoStart) { Program.EnableAutoStart(true); }
+            if (Program.State != null && Program.State.AutoStart) { Program.EnableAutoStart(true); }
         }
 
         private static bool HasFlag(string[] args, string flag)
@@ -69,21 +82,35 @@ namespace VidDesk.Ui
 
         public void ShowWindow()
         {
-            if (_window == null || _window.IsDisposed)
+            try
             {
-                _window = new MainWindow();
-            }
-            _window.Show();
+                if (_window == null || _window.IsDisposed)
+                {
+                    Trace2.Step("shell: building main window");
+                    _window = new MainWindow();
+                    Trace2.Step("shell: main window built");
+                }
+                _window.Show();
             if (_window.WindowState == FormWindowState.Minimized)
             {
                 _window.WindowState = FormWindowState.Normal;
             }
-            _window.Activate();
+                _window.Activate();
+            }
+            catch (Exception ex)
+            {
+                Trace2.Write("show window failed: " + ex);
+                MessageBox.Show("Не удалось открыть окно VidDesk:
+" + ex.Message + "
+
+Лог: " + Trace2.Path,
+                    "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void Watch()
         {
-            if (!Program.Wallpaper.IsActive) { return; }
+            if (Program.Wallpaper == null || !Program.Wallpaper.IsActive) { return; }
             WallpaperWindow w = Program.Wallpaper.Window;
             if (w == null || !Native.DesktopHost.WindowAlive(w.SurfaceHandle))
             {
@@ -101,7 +128,7 @@ namespace VidDesk.Ui
         private void ExitApp()
         {
             SettingsStore.Save(Program.State);
-            Program.Wallpaper.Stop();
+            if (Program.Wallpaper != null) { Program.Wallpaper.Stop(); }
             _watcher.Stop();
             _tray.Visible = false;
             ExitThread();

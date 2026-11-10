@@ -149,7 +149,10 @@ namespace VidDesk.Native
             ex |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
             SetWindowLong(hwnd, GWL_EXSTYLE, ex);
 
+            Trace2.Write("desktop: parent=" + parent.ToString("X") + " style=" + style + " ex=" + ex);
             IntPtr previous = SetParent(hwnd, parent);
+            int err = Marshal.GetLastWin32Error();
+            Trace2.Write("desktop: setparent previous=" + previous.ToString("X") + " err=" + err);
             MoveWindow(hwnd, x, y, w, h, true);
             // SetParent returns null on failure, or the old parent on success.
             return previous != IntPtr.Zero || GetWindowLong(hwnd, GWL_STYLE) != 0;
