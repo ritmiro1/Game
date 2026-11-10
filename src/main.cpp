@@ -18,6 +18,7 @@
 #include <commdlg.h>
 #include <commctrl.h>
 #include <mmsystem.h>
+#include <wtsapi32.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -30,6 +31,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include "resampler.h"
 
 #ifndef WS_EX_NOREDIRECTIONBITMAP
 #define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
@@ -51,8 +53,8 @@ enum : UINT {
 enum {
     ID_OPEN = 1, ID_PAUSE, ID_STOP, ID_OK, ID_REMOVE,
     ID_FIT0 = 10, ID_FIT1, ID_FIT2,
-    ID_AUTORUN = 20, ID_FSPAUSE,
-    ID_VOL = 30,
+    ID_AUTORUN = 20, ID_FSPAUSE, ID_ECOPAUSE,
+    ID_VOL = 30, ID_SPEED_DOWN, ID_SPEED_UP,
     ID_TILE = 1000,
 };
 enum { IC_NONE, IC_PLUS, IC_PLAY, IC_PAUSE, IC_STOP };
@@ -70,6 +72,7 @@ struct Item {
     std::wstring path, name;
     int volume = 100;  // 0..500 (%)
     int fit = 0;       // 0 fill (cover), 1 fit (letterbox), 2 stretch
+    int speed = 100;   // 50..200 percent
     HBITMAP thumb = nullptr;
     int tw = 0, th = 0;
     int vw = 0, vh = 0;
@@ -106,13 +109,18 @@ static bool g_dragVol = false, g_tracking = false;
 static RECT g_volTrack = {}, g_gridRc = {}, g_panelRc = {};
 static std::wstring g_filter;
 static bool g_optFsPause = true, g_optAutorun = false, g_mfOk = false;
+static bool g_optEcoPause = false, g_sessionLocked = false, g_displayOff = false;
+static HPOWERNOTIFY g_displayNotify = nullptr;
+// GUID_CONSOLE_DISPLAY_STATE (0 = off, 1 = on, 2 = dimmed).
+static const GUID kConsoleDisplayState = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47}};
 
 static std::vector<std::wstring> g_jobs;  // guarded by g_cs
 static HANDLE g_jobEvt;
 
 // player shared state
 static std::atomic<bool> p_quit{false}, p_userPause{false}, p_autoPause{false}, p_repaint{false};
-static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0};
+static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0}, p_speed{100};
+static std::atomic<bool> p_mute{false};
 static HANDLE p_thread = nullptr;
 static std::wstring p_path;
 static std::vector<RECT> g_mon;  // monitor rects in wallpaper-window coords, guarded by g_cs
@@ -235,10 +243,13 @@ static bool LoadMF() {
 static void SaveConfig() {
     std::string s = "version=1\r\n";
     s += std::string("fspause=") + (g_optFsPause ? "1" : "0") + "\r\n";
+    s += std::string("ecopause=") + (g_optEcoPause ? "1" : "0") + "\r\n";
     s += "active=" + (g_active >= 0 ? WToU8(g_items[(size_t)g_active].path) : std::string()) + "\r\n";
     s += "selected=" + (g_sel >= 0 ? WToU8(g_items[(size_t)g_sel].path) : std::string()) + "\r\n";
-    for (auto& it : g_items)
+    for (auto& it : g_items) {
         s += "item=" + std::to_string(it.volume) + "|" + std::to_string(it.fit) + "|" + WToU8(it.path) + "\r\n";
+        s += "speed=" + std::to_string(it.speed) + "|" + WToU8(it.path) + "\r\n";
+    }
     HANDLE f = CreateFileW((ConfigDir() + L"\\config.txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return;
@@ -290,9 +301,16 @@ static std::wstring LoadConfig() {  // returns path of the wallpaper that was ac
         if (q == std::string::npos) continue;
         std::string key = line.substr(0, q), val = line.substr(q + 1);
         if (key == "fspause") g_optFsPause = (val != "0");
+        else if (key == "ecopause") g_optEcoPause = (val != "0");
         else if (key == "active") active = U8ToW(val);
         else if (key == "selected") selected = U8ToW(val);
-        else if (key == "item") {
+        else if (key == "speed") {
+            size_t a = val.find('|');
+            if (a != std::string::npos) {
+                int k = FindItem(U8ToW(val.substr(a + 1)));
+                if (k >= 0) g_items[(size_t)k].speed = std::clamp(atoi(val.substr(0, a).c_str()), 50, 200);
+            }
+        } else if (key == "item") {
             size_t a = val.find('|'), b = (a == std::string::npos) ? a : val.find('|', a + 1);
             if (b == std::string::npos) continue;
             std::wstring p = U8ToW(val.substr(b + 1));
@@ -576,6 +594,10 @@ struct Player {
     int aRate = 0, aCh = 0, aBits = 16, outCh = 2;
     AudioOut out;
     std::vector<short> pcm;
+    std::vector<float> inputPcm, resampled;
+    SpeedResampler resampler{2};
+    float smoothedGain = 1.0f;
+    double audioSourceFrames = 0;
     bool noScale = false;
     long long shown = 0;
 
@@ -655,7 +677,9 @@ struct Player {
             aBits = (int)b;
             bool fmtOk = r >= 8000 && r <= 384000 && c >= 1 && c <= 8 &&
                          (aFloat ? b == 32 : (b == 8 || b == 16 || b == 24 || b == 32));
-            outCh = c >= 2 ? 2 : 1;
+            outCh = 2;  // always stereo so the streaming resampler has a fixed layout
+            resampler.reset(p_speed.load() / 100.0);
+            smoothedGain = (p_mute.load() ? 0.0f : p_volume.load() / 100.0f);
             if (fmtOk && out.Open((int)r, outCh)) hasAudio = true;
             Log(L"audio: %u Hz, %u ch, %u bit, float=%d, ok=%d", r, c, b, (int)aFloat, (int)hasAudio);
         }
@@ -816,11 +840,11 @@ struct Player {
         BYTE* d = nullptr;
         DWORD len = 0;
         int frames = 0;
+        audioSourceFrames = 0;
         if (SUCCEEDED(buf->Lock(&d, nullptr, &len)) && d) {
             const int bps = aBits / 8;
             frames = (int)(len / (DWORD)(bps * aCh));
-            pcm.resize((size_t)frames * (size_t)outCh);
-            const float g = (float)std::clamp(p_volume.load(), 0, 500) / 100.0f;
+            inputPcm.resize((size_t)frames * 2);
             for (int i = 0; i < frames; i++) {
                 const BYTE* p = d + (size_t)i * (size_t)(bps * aCh);
                 float L = 0, R = 0;
@@ -838,13 +862,24 @@ struct Player {
                     }
                     if (aCh > 2) { L *= 0.75f; R *= 0.75f; }
                 }
-                L *= g;
-                R *= g;
-                if (g > 1.0f) { L = Limit(L); R = Limit(R); }
-                else { L = std::clamp(L, -1.0f, 1.0f); R = std::clamp(R, -1.0f, 1.0f); }
-                pcm[(size_t)i * (size_t)outCh] = (short)lrintf(L * 32767.0f);
-                if (outCh == 2) pcm[(size_t)i * 2 + 1] = (short)lrintf(R * 32767.0f);
+                inputPcm[(size_t)i * 2] = std::isfinite(L) ? L : 0;
+                inputPcm[(size_t)i * 2 + 1] = std::isfinite(R) ? R : 0;
             }
+            resampler.process(inputPcm.data(), (size_t)frames, p_speed.load() / 100.0, resampled);
+            audioSourceFrames = resampler.consumedFrames();
+            pcm.resize(resampled.size());
+            const float targetGain = p_mute.load() ? 0.0f : (float)std::clamp(p_volume.load(), 0, 500) / 100.0f;
+            // A short ramp eliminates clicks when changing gain or muting.
+            const float smoothing = 1.0f - expf(-1.0f / (0.01f * aRate));
+            for (size_t i = 0; i + 1 < resampled.size(); i += 2) {
+                smoothedGain += (targetGain - smoothedGain) * smoothing;
+                for (int c = 0; c < 2; ++c) {
+                    float v = resampled[i + c] * smoothedGain;
+                    v = smoothedGain > 1.0f ? Limit(v) : std::clamp(v, -1.0f, 1.0f);
+                    pcm[i + c] = (short)lrintf(v * 32767.0f);
+                }
+            }
+            frames = (int)(pcm.size() / 2);
             buf->Unlock();
             out.Write(pcm.data(), (size_t)frames);
         }
@@ -887,10 +922,11 @@ struct Player {
         }
     }
     int Play(HRESULT& hr) {
-        const double LEAD = 0.20;  // seconds of audio kept queued
+        const double LEAD = 0.12;  // seconds of audio kept queued
         IMFSample *vS = nullptr, *aS = nullptr;
         double vPts = 0, aPts = 0, base = 0, aUntil = 0, lastV = 0, frameDur = 1.0 / 30, pauseAt = 0;
         bool clockSet = false, vEos = false, aEos = !hasAudio, wasPaused = false;
+        double speed = p_speed.load() / 100.0;
         int framesThisPass = 0, skipped = 0, result = R_QUIT;
         bool failed = false;
         hr = S_OK;
@@ -942,16 +978,24 @@ struct Player {
                     vS = s;
                     vPts = (double)ts / 1e7;
                     if (!clockSet) {
-                        base = NowSec() - vPts;
+                        base = NowSec() - vPts / speed;
                         aUntil = vPts;
                         clockSet = true;
                     }
                 }
             }
-            double now = NowSec() - base;
+            // Rebase the media clock continuously when the speed changes.
+            double wall = NowSec();
+            double nextSpeed = p_speed.load() / 100.0;
+            if (clockSet && nextSpeed != speed) {
+                double mediaNow = (wall - base) * speed;
+                base = wall - mediaNow / nextSpeed;
+            }
+            speed = nextSpeed;
+            double now = (wall - base) * speed;
             if (vS && now - vPts > 0.5) {
                 // far behind (PC woke from sleep, long stall): continue from this frame instead of racing to catch up
-                base = NowSec() - vPts;
+                base = NowSec() - vPts / speed;
                 now = vPts;
                 aUntil = now;
                 out.Reset(false);
@@ -960,7 +1004,7 @@ struct Player {
             // 2) feed audio a little ahead of the clock
             if (hasAudio && clockSet) {
                 int guard = 0;
-                while (!aEos && aUntil - now < LEAD && guard++ < 96) {
+                while (!aEos && aUntil - now < LEAD * speed && guard++ < 96) {
                     if (!aS) {
                         DWORD idx = 0, flags = 0;
                         LONGLONG ts = 0;
@@ -978,13 +1022,13 @@ struct Player {
                     }
                     double playAt = std::max(now, aUntil);
                     if (aPts - playAt > 0.03) break;  // not due yet
-                    if (playAt - aPts > 0.05) {       // too late: drop to regain sync
+                    if (playAt - aPts > 0.5) {        // severe desynchronisation only; avoid chopping short packets
                         aS->Release();
                         aS = nullptr;
                         continue;
                     }
-                    int fr = SubmitAudio(aS);
-                    aUntil = playAt + (double)fr / (double)aRate;
+                    SubmitAudio(aS);
+                    aUntil = playAt + audioSourceFrames / (double)aRate;
                     aS->Release();
                     aS = nullptr;
                 }
@@ -1007,7 +1051,7 @@ struct Player {
                     vS->Release();
                     vS = nullptr;
                 } else {
-                    Sleep(d > 0.012 ? 8 : 1);
+                    Sleep(d / speed > 0.012 ? 8 : 1);
                 }
             } else if (vEos && aEos) {
                 double endT = std::max(lastV + frameDur, hasAudio ? aUntil : 0.0);
@@ -1027,6 +1071,7 @@ struct Player {
                         break;
                     }
                     out.Reset(false);
+                    resampler.reset(speed);
                     if (aS) { aS->Release(); aS = nullptr; }
                     vEos = false;
                     aEos = !hasAudio;
@@ -1109,6 +1154,7 @@ static bool StartWallpaper(int idx) {
     p_path = g_items[(size_t)idx].path;
     p_volume = g_items[(size_t)idx].volume;
     p_fit = g_items[(size_t)idx].fit;
+    p_speed = g_items[(size_t)idx].speed;
     p_userPause = false;
     p_thread = CreateThread(nullptr, 0, PlayerThread, nullptr, 0, nullptr);
     Log(L"start: %ls", p_path.c_str());
@@ -1149,6 +1195,7 @@ static bool ForegroundIsFullscreen() {
                                     L"LoopDeskMain", L"LoopDeskWall"};
     for (auto s : skip)
         if (!lstrcmpW(cls, s)) return false;
+    if (IsZoomed(fg)) return true;
     RECT wr;
     if (!GetWindowRect(fg, &wr)) return false;
     MONITORINFO mi = {};
@@ -1433,8 +1480,9 @@ static void PaintAll(HDC dc, int W, int H) {
         if (!err.empty()) { st = L"Ошибка: " + err; sc = C_WARN; }
         else if (g_active >= 0) {
             const wchar_t* pre = p_userPause.load() ? L"Пауза: "
-                                 : (p_autoPause.load() ? L"Пауза (полный экран): " : L"Сейчас на рабочем столе: ");
+                                 : (p_autoPause.load() ? L"Автопауза: " : L"Сейчас на рабочем столе: ");
             st = pre + g_items[(size_t)g_active].name;
+            if (p_mute.load()) st += L" (без звука)";
             sc = C_TEXT;
         } else st = L"Обои не установлены";
         RECT rs = {S(310), 0, W - S(16), topH};
@@ -1466,7 +1514,7 @@ static void PaintAll(HDC dc, int W, int H) {
     if (g_sel >= 0 && g_sel < (int)g_items.size()) {
         Item& it = g_items[(size_t)g_sel];
         // the preview takes whatever height is left after the fixed-size controls below it
-        const int ph = std::clamp((H - botH) - y - S(348), S(64), pw * 9 / 16);
+        const int ph = std::clamp((H - botH) - y - S(416), S(64), pw * 9 / 16);
         RECT pv = {px, y, px + pw, y + ph};
         DrawThumb(dc, pv, it);
         Frame(dc, pv, 1, C_LINE);
@@ -1524,6 +1572,17 @@ static void PaintAll(HDC dc, int W, int H) {
         Txt(dc, L"500%", s5, g_fSmall, C_DIM, DT_RIGHT | DT_ONE);
         y += S(26);
 
+        // Playback speed changes continuously; audio pitch follows speed.
+        RECT rspeed = {px, y, px + pw - S(92), y + S(30)};
+        wchar_t sb[80];
+        _snwprintf(sb, 79, L"Скорость: %d%%", it.speed); sb[79] = 0;
+        Txt(dc, sb, rspeed, g_fUI, C_TEXT);
+        RECT sm = {px + pw - S(88), y, px + pw - S(48), y + S(30)};
+        RECT sp = {px + pw - S(40), y, px + pw, y + S(30)};
+        Button(dc, sm, ID_SPEED_DOWN, L"−", IC_NONE, false);
+        Button(dc, sp, ID_SPEED_UP, L"+", IC_NONE, false);
+        y += S(40);
+
         // placement
         RECT rf = {px, y, px + pw, y + S(20)};
         Txt(dc, L"ПОЛОЖЕНИЕ", rf, g_fSmall, C_DIM);
@@ -1554,7 +1613,9 @@ static void PaintAll(HDC dc, int W, int H) {
     y += S(24);
     Checkbox(dc, px, y, pw, ID_AUTORUN, L"Запускать вместе с Windows", g_optAutorun);
     y += S(26);
-    Checkbox(dc, px, y, pw, ID_FSPAUSE, L"Пауза при полноэкранных приложениях", g_optFsPause);
+    Checkbox(dc, px, y, pw, ID_FSPAUSE, L"Пауза: полное или развёрнутое окно", g_optFsPause);
+    y += S(26);
+    Checkbox(dc, px, y, pw, ID_ECOPAUSE, L"Пауза: батарея / блокировка / экран", g_optEcoPause);
 
     // ----- bottom bar
     RECT rbm = {0, H - botH, W, H};
@@ -1715,6 +1776,15 @@ static void Command(HWND h, int id) {
     case ID_STOP: StopWallpaper(); break;
     case ID_OK: HideMain(); break;
     case ID_REMOVE: RemoveItem(g_sel); break;
+    case ID_SPEED_DOWN: case ID_SPEED_UP:
+        if (g_sel >= 0 && g_sel < (int)g_items.size()) {
+            Item& it = g_items[(size_t)g_sel];
+            it.speed = std::clamp(it.speed + (id == ID_SPEED_UP ? 5 : -5), 50, 200);
+            if (g_sel == g_active) p_speed = it.speed;
+            SaveConfig();
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        break;
     case ID_FIT0: case ID_FIT1: case ID_FIT2:
         if (g_sel >= 0 && g_sel < (int)g_items.size() && g_items[(size_t)g_sel].fit != id - ID_FIT0) {
             g_items[(size_t)g_sel].fit = id - ID_FIT0;
@@ -1727,6 +1797,11 @@ static void Command(HWND h, int id) {
         g_optAutorun = !g_optAutorun;
         AutorunSet(g_optAutorun);
         g_optAutorun = AutorunGet();
+        InvalidateRect(h, nullptr, FALSE);
+        break;
+    case ID_ECOPAUSE:
+        g_optEcoPause = !g_optEcoPause;
+        SaveConfig();
         InvalidateRect(h, nullptr, FALSE);
         break;
     case ID_FSPAUSE:
@@ -1771,6 +1846,12 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             Fn fn = (Fn)(void*)GetProcAddress(dwm, "DwmSetWindowAttribute");
             if (fn && FAILED(fn(h, 20, &dark, sizeof(dark)))) fn(h, 19, &dark, sizeof(dark));
         }
+        if (!RegisterHotKey(h, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'P')) Log(L"hotkey Ctrl+Alt+P unavailable");
+        if (!RegisterHotKey(h, 2, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'N')) Log(L"hotkey Ctrl+Alt+N unavailable");
+        if (!RegisterHotKey(h, 3, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'M')) Log(L"hotkey Ctrl+Alt+M unavailable");
+        if (!WTSRegisterSessionNotification(h, NOTIFY_FOR_THIS_SESSION)) Log(L"session notifications unavailable");
+        g_displayNotify = RegisterPowerSettingNotification(h, &kConsoleDisplayState, DEVICE_NOTIFY_WINDOW_HANDLE);
+        if (!g_displayNotify) Log(L"display power notifications unavailable");
         SetTimer(h, 1, 700, nullptr);
         return 0;
     }
@@ -1891,6 +1972,11 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     }
+    case WM_HOTKEY:
+        if (wp == 1) TogglePause();
+        else if (wp == 2 && !g_items.empty()) StartWallpaper((g_active + 1) % (int)g_items.size());
+        else if (wp == 3) { p_mute = !p_mute.load(); InvalidateRect(h, nullptr, FALSE); }
+        return 0;
     case WM_KEYDOWN:
         if (wp == VK_DELETE && g_sel >= 0) RemoveItem(g_sel);
         else if (wp == VK_SPACE) TogglePause();
@@ -1959,9 +2045,25 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             else if (c == MENU_EXIT) DestroyWindow(h);
         }
         return 0;
+    case WM_WTSSESSION_CHANGE:
+        if (wp == WTS_SESSION_LOCK) g_sessionLocked = true;
+        else if (wp == WTS_SESSION_UNLOCK) g_sessionLocked = false;
+        return 0;
+    case WM_POWERBROADCAST:
+        if (wp == PBT_POWERSETTINGCHANGE && lp) {
+            POWERBROADCAST_SETTING* setting = (POWERBROADCAST_SETTING*)lp;
+            if (IsEqualGUID(setting->PowerSetting, kConsoleDisplayState) && setting->DataLength >= sizeof(DWORD)) {
+                DWORD state; memcpy(&state, setting->Data, sizeof(state));
+                g_displayOff = state == 0;
+            }
+        }
+        return TRUE;
     case WM_TIMER:
         if (wp == 1) {
-            bool fs = g_optFsPause && g_active >= 0 && ForegroundIsFullscreen();
+            SYSTEM_POWER_STATUS power = {};
+            bool battery = GetSystemPowerStatus(&power) && power.ACLineStatus == 0;
+            bool fs = g_active >= 0 && ((g_optFsPause && ForegroundIsFullscreen()) ||
+                      (g_optEcoPause && (g_sessionLocked || g_displayOff || battery)));
             if (fs != p_autoPause.load()) {
                 p_autoPause = fs;
                 InvalidateRect(h, nullptr, FALSE);
@@ -1998,6 +2100,9 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         KillTimer(h, 1);
+        for (int i = 1; i <= 3; ++i) UnregisterHotKey(h, i);
+        WTSUnRegisterSessionNotification(h);
+        if (g_displayNotify) UnregisterPowerSettingNotification(g_displayNotify);
         Shutdown();
         PostQuitMessage(0);
         return 0;

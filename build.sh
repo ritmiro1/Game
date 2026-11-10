@@ -14,6 +14,6 @@ mkdir -p release
   -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter \
   src/main.cpp res/app.rc -o release/LoopDesk.exe \
   -static -Wl,--subsystem,windows \
-  -luser32 -lgdi32 -lshell32 -lole32 -lcomdlg32 -lcomctl32 -ladvapi32 -lwinmm -luuid
+  -luser32 -lgdi32 -lshell32 -lole32 -lcomdlg32 -lcomctl32 -ladvapi32 -lwinmm -lwtsapi32 -luuid
 
 ls -l release/LoopDesk.exe
