@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 #include "resampler.h"
-#include "trim.h"
+#include "video_edit.h"
 
 #ifndef WS_EX_NOREDIRECTIONBITMAP
 #define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
@@ -49,13 +49,14 @@ enum : UINT {
     WM_APP_THUMB,
     WM_APP_STATE,
     WM_APP_SHOW,
+    WM_APP_PREVIEW,
 };
 
 enum {
     ID_OPEN = 1, ID_PAUSE, ID_STOP, ID_OK, ID_REMOVE,
     ID_FIT0 = 10, ID_FIT1, ID_FIT2,
     ID_AUTORUN = 20, ID_FSPAUSE, ID_ECOPAUSE,
-    ID_VOL = 30, ID_SPEED, ID_TRIM, ID_TRIM_RESET,
+    ID_VOL = 30, ID_SPEED, ID_EDIT,
     ID_TILE = 1000,
 };
 enum { IC_NONE, IC_PLUS, IC_PLAY, IC_PAUSE, IC_STOP };
@@ -74,7 +75,7 @@ struct Item {
     int volume = 100;  // 0..500 (%)
     int fit = 0;       // 0 fill (cover), 1 fit (letterbox), 2 stretch
     int speed = 100;   // 15..200 percent
-    long long trimStartMs = 0, trimEndMs = -1; // -1 means end of file
+    VideoEdit edit;
     HBITMAP thumb = nullptr;
     int tw = 0, th = 0;
     int vw = 0, vh = 0;
@@ -107,9 +108,9 @@ static std::vector<Item> g_items;
 static int g_sel = -1, g_active = -1;
 static std::vector<Hit> g_hits;
 static int g_hot = 0, g_scroll = 0, g_maxScroll = 0;
-static int g_dragControl = 0, g_lastControl = 0, g_trimHandle = 0, g_panelScroll = 0, g_panelMaxScroll = 0;
+static int g_dragControl = 0, g_lastControl = 0, g_panelScroll = 0, g_panelMaxScroll = 0;
 static bool g_tracking = false;
-static RECT g_volTrack = {}, g_speedTrack = {}, g_trimTrack = {}, g_gridRc = {}, g_panelRc = {};
+static RECT g_volTrack = {}, g_speedTrack = {}, g_gridRc = {}, g_panelRc = {};
 static std::wstring g_filter;
 static bool g_optFsPause = true, g_optAutorun = false, g_mfOk = false;
 static bool g_optEcoPause = false, g_sessionLocked = false, g_displayOff = false;
@@ -124,8 +125,11 @@ static HANDLE g_jobEvt;
 static std::atomic<bool> p_quit{false}, p_userPause{false}, p_autoPause{false}, p_repaint{false};
 static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0}, p_speed{100};
 static std::atomic<bool> p_mute{false};
-static std::atomic<long long> p_trimStartMs{0}, p_trimEndMs{-1};
-static std::atomic<unsigned> p_trimGen{0};
+static VideoEdit p_edit; // guarded by g_cs
+static std::atomic<HWND> g_previewWindow{nullptr};
+static std::atomic<bool> g_previewMessage{false};
+static std::vector<BYTE> g_previewPixels; // guarded by g_cs
+static int g_previewWidth = 0, g_previewHeight = 0;
 static HANDLE p_thread = nullptr;
 static std::wstring p_path;
 // UI requests are deferred until the old player thread has actually exited.
@@ -258,7 +262,12 @@ static void SaveConfig() {
     for (auto& it : g_items) {
         s += "item=" + std::to_string(it.volume) + "|" + std::to_string(it.fit) + "|" + WToU8(it.path) + "\r\n";
         s += "speed=" + std::to_string(it.speed) + "|" + WToU8(it.path) + "\r\n";
-        s += "trim=" + std::to_string(it.trimStartMs) + "|" + std::to_string(it.trimEndMs) + "|" + WToU8(it.path) + "\r\n";
+        const VideoEdit& e = it.edit;
+        s += "edit=" + std::to_string(e.left) + "|" + std::to_string(e.top) + "|" +
+             std::to_string(e.right) + "|" + std::to_string(e.bottom) + "|" +
+             std::to_string(e.brightness) + "|" + std::to_string(e.contrast) + "|" +
+             std::to_string(e.saturation) + "|" + WToU8(it.path) + "\r\n";
+        s += "mirror=" + std::to_string((int)e.flipX) + "|" + std::to_string((int)e.flipY) + "|" + WToU8(it.path) + "\r\n";
     }
     HANDLE f = CreateFileW((ConfigDir() + L"\\config.txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -320,17 +329,25 @@ static std::wstring LoadConfig() {  // returns path of the wallpaper that was ac
                 int k = FindItem(U8ToW(val.substr(a + 1)));
                 if (k >= 0) g_items[(size_t)k].speed = std::clamp(atoi(val.substr(0, a).c_str()), 15, 200);
             }
-        } else if (key == "trim") {
+        } else if (key == "edit") {
+            size_t pathPos = 0;
+            for (int i = 0; i < 7 && pathPos != std::string::npos; ++i) {
+                pathPos = val.find('|', pathPos);
+                if (pathPos != std::string::npos) ++pathPos;
+            }
+            VideoEdit e;
+            if (pathPos != std::string::npos && sscanf(val.c_str(), "%d|%d|%d|%d|%d|%d|%d|",
+                &e.left, &e.top, &e.right, &e.bottom, &e.brightness, &e.contrast, &e.saturation) == 7) {
+                int k = FindItem(U8ToW(val.substr(pathPos)));
+                if (k >= 0) { NormalizeEdit(e); g_items[(size_t)k].edit = e; }
+            }
+        } else if (key == "mirror") {
             size_t a = val.find('|'), b = a == std::string::npos ? a : val.find('|', a + 1);
             if (b != std::string::npos) {
                 int k = FindItem(U8ToW(val.substr(b + 1)));
                 if (k >= 0) {
-                    long long start = _strtoi64(val.substr(0, a).c_str(), nullptr, 10);
-                    long long end = _strtoi64(val.substr(a + 1, b - a - 1).c_str(), nullptr, 10);
-                    if (start >= 0 && start < 2592000000LL && (end == -1 || (end > start && end <= 2592000000LL))) {
-                        g_items[(size_t)k].trimStartMs = start;
-                        g_items[(size_t)k].trimEndMs = end;
-                    }
+                    g_items[(size_t)k].edit.flipX = atoi(val.substr(0, a).c_str()) != 0;
+                    g_items[(size_t)k].edit.flipY = atoi(val.substr(a + 1, b - a - 1).c_str()) != 0;
                 }
             }
         } else if (key == "item") {
@@ -610,6 +627,15 @@ struct Player {
     BYTE* bits = nullptr;
     UINT32 dw = 0, dh = 0;
     bool haveFrame = false;
+    std::vector<BYTE> rawFrame;
+    bool frameProcessed = false;
+    VideoEdit appliedColor;
+    HDC previewDC = nullptr;
+    HBITMAP previewBmp = nullptr;
+    HGDIOBJ previewOld = nullptr;
+    BYTE* previewBits = nullptr;
+    int previewW = 0, previewH = 0;
+    double previewAt = 0;
     std::vector<RECT> mons;
     int layoutSeen = -1;
     // audio
@@ -813,16 +839,73 @@ struct Player {
             }
         }
         buf->Release();
+        rawFrame.assign(bits, bits + (size_t)dw * dh * 4);
+        frameProcessed = false;
         haveFrame = true;
     }
-    void Draw() {
+    RECT VisibleForEdit(const VideoEdit& e) const {
+        RECT r = vis;
+        if (e.flipX) { r.left = (LONG)dw - vis.right; r.right = (LONG)dw - vis.left; }
+        if (e.flipY) { r.top = (LONG)dh - vis.bottom; r.bottom = (LONG)dh - vis.top; }
+        return r;
+    }
+    void CapturePreview(bool force, const RECT& visible) {
+        HWND target = g_previewWindow.load();
+        if (!target || (!force && NowSec() - previewAt < 0.05)) return;
+        int aw = visible.right - visible.left, ah = visible.bottom - visible.top;
+        if (aw <= 0 || ah <= 0) return;
+        double scale = std::min(1.0, 640.0 / std::max(aw, ah));
+        int nw = std::max(1, (int)(aw * scale)), nh = std::max(1, (int)(ah * scale));
+        if (!previewDC || nw != previewW || nh != previewH) {
+            if (previewDC && previewOld) SelectObject(previewDC, previewOld);
+            if (previewBmp) DeleteObject(previewBmp);
+            if (!previewDC) previewDC = CreateCompatibleDC(nullptr);
+            previewBmp = nullptr; previewBits = nullptr; previewOld = nullptr;
+            BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth = nw; bi.bmiHeader.biHeight = -nh;
+            bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+            void* ptr = nullptr;
+            previewBmp = CreateDIBSection(previewDC, &bi, DIB_RGB_COLORS, &ptr, nullptr, 0);
+            if (!previewBmp || !ptr) return;
+            previewBits = (BYTE*)ptr; previewOld = SelectObject(previewDC, previewBmp);
+            previewW = nw; previewH = nh;
+        }
+        SetStretchBltMode(previewDC, COLORONCOLOR);
+        if (!StretchBlt(previewDC, 0, 0, previewW, previewH, mem, visible.left, visible.top, aw, ah, SRCCOPY)) return;
+        GdiFlush();
+        EnterCriticalSection(&g_cs);
+        g_previewPixels.assign(previewBits, previewBits + (size_t)previewW * previewH * 4);
+        g_previewWidth = previewW; g_previewHeight = previewH;
+        LeaveCriticalSection(&g_cs);
+        previewAt = NowSec();
+        if (!g_previewMessage.exchange(true)) {
+            if (!PostMessageW(target, WM_APP_PREVIEW, 0, 0)) g_previewMessage = false;
+        }
+    }
+    void Draw(bool forcePreview = false) {
         if (!haveFrame || !mem) return;
+        VideoEdit e;
+        EnterCriticalSection(&g_cs); e = p_edit; LeaveCriticalSection(&g_cs);
+        if (!frameProcessed || e.brightness != appliedColor.brightness ||
+            e.contrast != appliedColor.contrast || e.saturation != appliedColor.saturation ||
+            e.flipX != appliedColor.flipX || e.flipY != appliedColor.flipY) {
+            bool hadColor = frameProcessed && (appliedColor.brightness != 0 || appliedColor.contrast != 100 ||
+                                                appliedColor.saturation != 100 || appliedColor.flipX || appliedColor.flipY);
+            GdiFlush();
+            if (hadColor && rawFrame.size() == (size_t)dw * dh * 4) memcpy(bits, rawFrame.data(), rawFrame.size());
+            FlipImage(bits, (int)dw, (int)dh, e.flipX, e.flipY);
+            AdjustColors(bits, (size_t)dw * dh, e);
+            appliedColor = e; frameProcessed = true;
+        }
+        RECT visible = VisibleForEdit(e);
+        CapturePreview(forcePreview, visible);
         HWND w = g_wall.load();
         if (!w) return;
         HDC dc = GetDC(w);
         if (!dc) return;
         const int fit = p_fit.load();
-        const int ax = vis.left, ay = vis.top, aw = vis.right - vis.left, ah = vis.bottom - vis.top;
+        VideoRect crop = CropRect(visible.left, visible.top, visible.right - visible.left, visible.bottom - visible.top, e);
+        const int ax = crop.x, ay = crop.y, aw = crop.width, ah = crop.height;
         SetStretchBltMode(dc, COLORONCOLOR);
         for (auto& m : mons) {
             int mw = m.right - m.left, mh = m.bottom - m.top;
@@ -858,7 +941,7 @@ struct Player {
         default: { int v; memcpy(&v, p, 4); return (float)(v / 2147483648.0); }
         }
     }
-    int SubmitAudio(IMFSample* s, double samplePts, double trimStart, double trimEnd) {  // returns number of audio frames queued
+    int SubmitAudio(IMFSample* s) {  // returns number of audio frames queued
         IMFMediaBuffer* buf = nullptr;
         if (FAILED(s->ConvertToContiguousBuffer(&buf)) || !buf) return 0;
         BYTE* d = nullptr;
@@ -868,10 +951,6 @@ struct Player {
         if (SUCCEEDED(buf->Lock(&d, nullptr, &len)) && d) {
             const int bps = aBits / 8;
             frames = (int)(len / (DWORD)(bps * aCh));
-            // Trim PCM at sample boundaries, not just at compressed packet boundaries.
-            AudioRange range = TrimAudioRange(frames, aRate, samplePts, trimStart, trimEnd);
-            d += (size_t)range.first * (size_t)(bps * aCh);
-            frames = range.last - range.first;
             inputPcm.resize((size_t)frames * 2);
             for (int i = 0; i < frames; i++) {
                 const BYTE* p = d + (size_t)i * (size_t)(bps * aCh);
@@ -926,6 +1005,9 @@ struct Player {
             mem = nullptr;
         }
         if (dib) { DeleteObject(dib); dib = nullptr; }
+        if (previewDC && previewOld) SelectObject(previewDC, previewOld);
+        if (previewBmp) DeleteObject(previewBmp);
+        if (previewDC) DeleteDC(previewDC);
         bits = nullptr;
     }
 
@@ -964,14 +1046,7 @@ struct Player {
         double speed = p_speed.load() / 100.0;
         int framesThisPass = 0, skipped = 0, result = R_QUIT;
         bool failed = false;
-        double trimStart = p_trimStartMs.load() / 1000.0;
-        double trimEnd = p_trimEndMs.load() < 0 ? -1 : p_trimEndMs.load() / 1000.0;
-        unsigned trimSeen = p_trimGen.load();
         hr = S_OK;
-        if (trimStart > 0 && FAILED(hr = Seek(trimStart))) {
-            PlayerFail(L"Не удалось перейти к началу выбранного фрагмента", hr);
-            return R_QUIT;
-        }
 
         while (!p_quit.load()) {
             if (layoutSeen != p_layoutGen.load()) {
@@ -979,30 +1054,13 @@ struct Player {
                 p_repaint = true;
             }
             const bool paused = p_userPause.load() || p_autoPause.load();
-            if (trimSeen != p_trimGen.load()) {
-                trimStart = p_trimStartMs.load() / 1000.0;
-                long long endMs = p_trimEndMs.load();
-                trimEnd = endMs < 0 ? -1 : endMs / 1000.0;
-                trimSeen = p_trimGen.load();
-                hr = Seek(trimStart);
-                if (FAILED(hr)) {
-                    PlayerFail(L"Не удалось перейти к началу выбранного фрагмента", hr);
-                    break;
-                }
-                out.Reset(paused);
-                resampler.reset(speed);
-                if (vS) { vS->Release(); vS = nullptr; }
-                if (aS) { aS->Release(); aS = nullptr; }
-                vEos = false; aEos = !hasAudio; clockSet = false;
-                framesThisPass = 0; lastV = 0;
-            }
             if (paused) {
                 if (!wasPaused) {
                     wasPaused = true;
                     pauseAt = NowSec();
                     out.Pause(true);
                 }
-                if (p_repaint.exchange(false)) Draw();
+                if (p_repaint.exchange(false)) Draw(true);
                 Sleep(25);
                 continue;
             }
@@ -1011,7 +1069,7 @@ struct Player {
                 base += NowSec() - pauseAt;
                 out.Pause(false);
             }
-            if (p_repaint.exchange(false)) Draw();
+            if (p_repaint.exchange(false)) Draw(true);
 
             // 1) keep one decoded video frame waiting
             if (!vS && !vEos) {
@@ -1035,21 +1093,13 @@ struct Player {
                 if (flags & MF_SOURCE_READERF_ENDOFSTREAM) vEos = true;
                 if (s) {
                     vPts = (double)ts / 1e7;
-                    if (vPts + 0.000001 < trimStart) { s->Release(); continue; }
-                    if (trimEnd >= 0 && vPts >= trimEnd) { s->Release(); vEos = true; }
-                    else vS = s;
-                    if (vS) {
+                    vS = s;
                     if (!clockSet) {
                         base = NowSec() - vPts / speed;
                         aUntil = vPts;
                         clockSet = true;
                     }
-                    }
                 }
-            }
-            if (vEos && !clockSet && !vS) {
-                PlayerFail(L"В выбранном фрагменте не найдено кадров", E_FAIL);
-                break;
             }
             // Rebase the media clock continuously when the speed changes.
             double wall = NowSec();
@@ -1087,9 +1137,6 @@ struct Player {
                         aS = s;
                         aPts = (double)ts / 1e7;
                     }
-                    if (trimEnd >= 0 && aPts >= trimEnd) {
-                        aS->Release(); aS = nullptr; aEos = true; break;
-                    }
                     double playAt = std::max(now, aUntil);
                     if (aPts - playAt > 0.03) break;  // not due yet
                     if (playAt - aPts > 0.5) {        // severe desynchronisation only; avoid chopping short packets
@@ -1097,7 +1144,7 @@ struct Player {
                         aS = nullptr;
                         continue;
                     }
-                    SubmitAudio(aS, aPts, trimStart, trimEnd);
+                    SubmitAudio(aS);
                     aUntil = playAt + audioSourceFrames / (double)aRate;
                     aS->Release();
                     aS = nullptr;
@@ -1125,14 +1172,13 @@ struct Player {
                 }
             } else if (vEos && aEos) {
                 double endT = std::max(lastV + frameDur, hasAudio ? aUntil : 0.0);
-                if (trimEnd >= 0) endT = std::min(endT, trimEnd);
                 if (!clockSet || now >= endT - 0.004) {
                     if (framesThisPass == 0) {
                         hr = E_FAIL;
                         failed = true;
                         break;
                     }
-                    hr = Seek(trimStart);
+                    hr = Seek(0);
                     if (FAILED(hr)) {  // source cannot seek: start over with a fresh reader
                         result = R_REOPEN;
                         break;
@@ -1194,7 +1240,9 @@ static void DestroyWall() {
     HWND w = g_wall.exchange(nullptr);
     if (w) DestroyWindow(w);
 }
+static void CloseEditor(bool apply);
 static bool StartWallpaper(int idx) {
+    CloseEditor(false);
     if (idx < 0 || idx >= (int)g_items.size()) return false;
     if (p_thread && WaitForSingleObject(p_thread, 0) != WAIT_OBJECT_0) {
         g_pendingAction = 1;
@@ -1239,9 +1287,7 @@ static bool StartWallpaper(int idx) {
     p_volume = g_items[(size_t)idx].volume;
     p_fit = g_items[(size_t)idx].fit;
     p_speed = g_items[(size_t)idx].speed;
-    p_trimStartMs = g_items[(size_t)idx].trimStartMs;
-    p_trimEndMs = g_items[(size_t)idx].trimEndMs;
-    ++p_trimGen;
+    EnterCriticalSection(&g_cs); p_edit = g_items[(size_t)idx].edit; LeaveCriticalSection(&g_cs);
     p_userPause = false;
     p_thread = CreateThread(nullptr, 0, PlayerThread, nullptr, 0, nullptr);
     if (!p_thread) {
@@ -1256,6 +1302,7 @@ static bool StartWallpaper(int idx) {
     return true;
 }
 static void StopWallpaper() {
+    CloseEditor(false);
     g_reattachPending = false;
     if (p_thread && WaitForSingleObject(p_thread, 0) != WAIT_OBJECT_0) {
         g_pendingAction = 2; g_pendingPath.clear(); p_quit = true;
@@ -1294,7 +1341,7 @@ static bool ForegroundIsFullscreen() {
     wchar_t cls[80] = L"";
     GetClassNameW(fg, cls, 80);
     static const wchar_t* skip[] = {L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd",
-                                    L"LoopDeskMain", L"LoopDeskWall"};
+                                    L"LoopDeskMain", L"LoopDeskWall", L"LoopDeskEditor", L"LoopDeskPreview"};
     for (auto s : skip)
         if (!lstrcmpW(cls, s)) return false;
     if (IsZoomed(fg)) return true;
@@ -1495,6 +1542,278 @@ static std::wstring MetaText(const Item& it) {
     return s;
 }
 
+// ------------------------------------------------------------------ non-destructive frame editor
+static HWND g_editor = nullptr, g_edPreview = nullptr;
+static HWND g_edTracks[3] = {}, g_edLabels[3] = {}, g_edButtons[8] = {}, g_edMirror[2] = {}, g_edTitle = nullptr;
+static std::wstring g_editorPath;
+static VideoEdit g_editOriginal, g_editDraft;
+static RECT g_previewImage = {};
+static int g_cropDrag = 0, g_cropLast = 16;
+static POINT g_cropAnchor = {};
+static VideoEdit g_dragOriginal;
+enum { ED_BRIGHT = 101, ED_CONTRAST, ED_SAT, ED_RESET = 110, ED_FREE, ED_169, ED_43, ED_11, ED_APPLY, ED_CANCEL, ED_FLIP_X, ED_FLIP_Y, ED_PAUSE };
+static const wchar_t* EDITOR_CLASS = L"LoopDeskEditor";
+static const wchar_t* PREVIEW_CLASS = L"LoopDeskPreview";
+
+static void PublishEdit() {
+    NormalizeEdit(g_editDraft);
+    EnterCriticalSection(&g_cs); p_edit = g_editDraft; LeaveCriticalSection(&g_cs);
+    p_repaint = true;
+    if (g_edPreview) InvalidateRect(g_edPreview, nullptr, FALSE);
+}
+static void SetEditorLabels() {
+    const wchar_t* names[] = {L"Яркость", L"Контраст", L"Насыщенность"};
+    int values[] = {g_editDraft.brightness, g_editDraft.contrast, g_editDraft.saturation};
+    for (int i = 0; i < 3; ++i) {
+        wchar_t text[96]; _snwprintf(text, 95, L"%ls: %d", names[i], values[i]); text[95] = 0;
+        if (g_edLabels[i]) SetWindowTextW(g_edLabels[i], text);
+        if (g_edTracks[i]) SendMessageW(g_edTracks[i], TBM_SETPOS, TRUE, i == 0 ? values[i] + 100 : values[i]);
+    }
+    if (g_edMirror[0]) SendMessageW(g_edMirror[0], BM_SETCHECK, g_editDraft.flipX ? BST_CHECKED : BST_UNCHECKED, 0);
+    if (g_edMirror[1]) SendMessageW(g_edMirror[1], BM_SETCHECK, g_editDraft.flipY ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+static void CloseEditor(bool apply) {
+    if (!g_editor) return;
+    int idx = FindItem(g_editorPath);
+    if (apply && idx >= 0) { g_items[(size_t)idx].edit = g_editDraft; SaveConfig(); }
+    if (!apply) g_editDraft = g_editOriginal;
+    if (idx >= 0 && idx == g_active) PublishEdit();
+    g_previewWindow = nullptr;
+    HWND h = g_editor;
+    g_editor = nullptr; g_edPreview = nullptr;
+    DestroyWindow(h);
+    g_previewMessage = false;
+    EnterCriticalSection(&g_cs);
+    g_previewPixels.clear(); g_previewWidth = 0; g_previewHeight = 0;
+    LeaveCriticalSection(&g_cs);
+    InvalidateRect(g_main, nullptr, FALSE);
+}
+static RECT PreviewImageRect(HWND h, int vw, int vh) {
+    RECT r; GetClientRect(h, &r);
+    if (vw <= 0 || vh <= 0 || r.right <= 0 || r.bottom <= 0) return RECT{};
+    double scale = std::min((double)r.right / vw, (double)r.bottom / vh);
+    int w = std::max(1, (int)(vw * scale)), hgt = std::max(1, (int)(vh * scale));
+    int x = (r.right - w) / 2, y = (r.bottom - hgt) / 2;
+    return RECT{x, y, x + w, y + hgt};
+}
+static RECT CropOnPreview() {
+    int w = g_previewImage.right - g_previewImage.left, h = g_previewImage.bottom - g_previewImage.top;
+    return RECT{g_previewImage.left + MulDiv(w, g_editDraft.left, 10000),
+                g_previewImage.top + MulDiv(h, g_editDraft.top, 10000),
+                g_previewImage.left + MulDiv(w, g_editDraft.right, 10000),
+                g_previewImage.top + MulDiv(h, g_editDraft.bottom, 10000)};
+}
+static LRESULT CALLBACK PreviewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_APP_PREVIEW:
+        g_previewMessage = false; InvalidateRect(h, nullptr, FALSE); return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+        RECT client; GetClientRect(h, &client); FillRect(dc, &client, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        EnterCriticalSection(&g_cs);
+        int w = g_previewWidth, ht = g_previewHeight;
+        g_previewImage = PreviewImageRect(h, w, ht);
+        if (w > 0 && ht > 0 && g_previewPixels.size() == (size_t)w * ht * 4) {
+            BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -ht; bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+            SetStretchBltMode(dc, COLORONCOLOR);
+            StretchDIBits(dc, g_previewImage.left, g_previewImage.top, g_previewImage.right-g_previewImage.left,
+                          g_previewImage.bottom-g_previewImage.top, 0, 0, w, ht, g_previewPixels.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+        }
+        LeaveCriticalSection(&g_cs);
+        if (w > 0 && ht > 0) {
+            RECT c = CropOnPreview();
+            int save = SaveDC(dc);
+            IntersectClipRect(dc, g_previewImage.left, g_previewImage.top, g_previewImage.right, g_previewImage.bottom);
+            ExcludeClipRect(dc, c.left, c.top, c.right, c.bottom);
+            SetBkMode(dc, TRANSPARENT);
+            HBRUSH hatch = CreateHatchBrush(HS_BDIAGONAL, RGB(15, 15, 15));
+            FillRect(dc, &g_previewImage, hatch); DeleteObject(hatch);
+            RestoreDC(dc, save);
+            HPEN pen = CreatePen(PS_SOLID, std::max(2, S(2)), RGB(255,255,255));
+            HGDIOBJ oldPen = SelectObject(dc, pen), oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            Rectangle(dc, c.left, c.top, c.right, c.bottom);
+            SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(pen);
+            HBRUSH white = (HBRUSH)GetStockObject(WHITE_BRUSH);
+            int px[] = {c.left, (c.left+c.right)/2, c.right};
+            int py[] = {c.top, (c.top+c.bottom)/2, c.bottom};
+            for (int ix=0; ix<3; ++ix) for (int iy=0; iy<3; ++iy) {
+                if (ix==1 && iy==1) continue;
+                RECT b = {px[ix]-S(4), py[iy]-S(4), px[ix]+S(5), py[iy]+S(5)}; FillRect(dc, &b, white);
+            }
+        } else {
+            SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(220,220,220));
+            DrawTextW(dc, L"Ожидание кадра видео…", -1, &client, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        EndPaint(h, &ps); return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        int width = g_previewImage.right - g_previewImage.left, height = g_previewImage.bottom - g_previewImage.top;
+        if (width <= 0 || height <= 0) return 0;
+        POINT p = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        RECT r = CropOnPreview(); int tolerance = S(14);
+        int flags = 0;
+        if (p.y >= r.top-tolerance && p.y <= r.bottom+tolerance) {
+            if (std::abs(p.x-r.left) <= tolerance) flags |= 1;
+            else if (std::abs(p.x-r.right) <= tolerance) flags |= 2;
+        }
+        if (p.x >= r.left-tolerance && p.x <= r.right+tolerance) {
+            if (std::abs(p.y-r.top) <= tolerance) flags |= 4;
+            else if (std::abs(p.y-r.bottom) <= tolerance) flags |= 8;
+        }
+        if (!flags && PtInRect(&r,p)) flags = 16; // move the selection
+        if (!flags) return 0;
+        g_cropDrag = flags; g_cropLast = flags; g_cropAnchor = p; g_dragOriginal = g_editDraft;
+        SetFocus(h); SetCapture(h); return 0;
+    }
+    case WM_MOUSEMOVE:
+        if (g_cropDrag) {
+            int width = g_previewImage.right-g_previewImage.left, height = g_previewImage.bottom-g_previewImage.top;
+            if (width <= 0 || height <= 0) return 0;
+            int dx = MulDiv(GET_X_LPARAM(lp)-g_cropAnchor.x, 10000, width);
+            int dy = MulDiv(GET_Y_LPARAM(lp)-g_cropAnchor.y, 10000, height);
+            g_editDraft = g_dragOriginal;
+            if (g_cropDrag == 16) {
+                dx = std::clamp(dx, -g_dragOriginal.left, 10000-g_dragOriginal.right);
+                dy = std::clamp(dy, -g_dragOriginal.top, 10000-g_dragOriginal.bottom);
+                g_editDraft.left += dx; g_editDraft.right += dx; g_editDraft.top += dy; g_editDraft.bottom += dy;
+            } else {
+                if (g_cropDrag & 1) g_editDraft.left = std::clamp(g_dragOriginal.left+dx, 0, g_dragOriginal.right-100);
+                if (g_cropDrag & 2) g_editDraft.right = std::clamp(g_dragOriginal.right+dx, g_dragOriginal.left+100, 10000);
+                if (g_cropDrag & 4) g_editDraft.top = std::clamp(g_dragOriginal.top+dy, 0, g_dragOriginal.bottom-100);
+                if (g_cropDrag & 8) g_editDraft.bottom = std::clamp(g_dragOriginal.bottom+dy, g_dragOriginal.top+100, 10000);
+            }
+            PublishEdit();
+        }
+        return 0;
+    case WM_LBUTTONUP: if (g_cropDrag) { g_cropDrag = 0; ReleaseCapture(); } return 0;
+    case WM_KEYDOWN: {
+        int step = (GetKeyState(VK_SHIFT) & 0x8000) ? 100 : 10; // 1% or 0.1%
+        int dx = wp == VK_LEFT ? -step : wp == VK_RIGHT ? step : 0;
+        int dy = wp == VK_UP ? -step : wp == VK_DOWN ? step : 0;
+        if (!dx && !dy) break;
+        if (g_cropLast == 16) {
+            dx = std::clamp(dx, -g_editDraft.left, 10000-g_editDraft.right);
+            dy = std::clamp(dy, -g_editDraft.top, 10000-g_editDraft.bottom);
+            g_editDraft.left += dx; g_editDraft.right += dx; g_editDraft.top += dy; g_editDraft.bottom += dy;
+        } else {
+            if (g_cropLast & 1) g_editDraft.left = std::clamp(g_editDraft.left+dx, 0, g_editDraft.right-100);
+            if (g_cropLast & 2) g_editDraft.right = std::clamp(g_editDraft.right+dx, g_editDraft.left+100, 10000);
+            if (g_cropLast & 4) g_editDraft.top = std::clamp(g_editDraft.top+dy, 0, g_editDraft.bottom-100);
+            if (g_cropLast & 8) g_editDraft.bottom = std::clamp(g_editDraft.bottom+dy, g_editDraft.top+100, 10000);
+        }
+        PublishEdit(); return 0;
+    }
+    case WM_CAPTURECHANGED: g_cropDrag = 0; return 0;
+    }
+    return DefWindowProcW(h, m, wp, lp);
+}
+static void EditorPreset(double aspect) {
+    if (aspect <= 0) { g_editDraft.left=0; g_editDraft.top=0; g_editDraft.right=10000; g_editDraft.bottom=10000; }
+    else {
+        EnterCriticalSection(&g_cs); int w=g_previewWidth, h=g_previewHeight; LeaveCriticalSection(&g_cs);
+        if (w <= 0 || h <= 0) return;
+        double source = (double)w / h;
+        int cw = 10000, ch = 10000;
+        if (source > aspect) cw = (int)(10000 * aspect / source);
+        else ch = (int)(10000 * source / aspect);
+        cw = std::clamp(cw,100,10000); ch = std::clamp(ch,100,10000);
+        g_editDraft.left = (10000-cw)/2; g_editDraft.right = g_editDraft.left+cw;
+        g_editDraft.top = (10000-ch)/2; g_editDraft.bottom = g_editDraft.top+ch;
+    }
+    PublishEdit();
+}
+static void EditorLayout(HWND h) {
+    RECT r; GetClientRect(h, &r); int w=r.right, ht=r.bottom;
+    int x=w-S(270), leftW=std::max(S(100), x-S(28));
+    MoveWindow(g_edPreview, S(12), S(46), leftW, std::max(S(100), ht-S(64)), TRUE);
+    MoveWindow(g_edTitle, S(12), S(10), leftW, S(28), TRUE);
+    for (int i=0;i<3;i++) {
+        MoveWindow(g_edLabels[i], x, S(16+i*60), S(250), S(22), TRUE);
+        MoveWindow(g_edTracks[i], x, S(38+i*60), S(250), S(28), TRUE);
+    }
+    MoveWindow(g_edMirror[0], x, S(200), S(250), S(24), TRUE);
+    MoveWindow(g_edMirror[1], x, S(226), S(250), S(24), TRUE);
+    for (int i=0;i<5;i++) MoveWindow(g_edButtons[i], x, S(258+i*34), S(250), S(29), TRUE);
+    MoveWindow(g_edButtons[7], x, S(432), S(250), S(29), TRUE);
+    MoveWindow(g_edButtons[5], x, ht-S(82), S(250), S(30), TRUE);
+    MoveWindow(g_edButtons[6], x, ht-S(44), S(250), S(30), TRUE);
+}
+static HWND EditorChild(HWND parent, const wchar_t* cls, const wchar_t* label, DWORD style, int id) {
+    HWND w = CreateWindowExW(0, cls, label, WS_CHILD | WS_VISIBLE | style, 0, 0, 1, 1, parent,
+                             (HMENU)(INT_PTR)id, g_hi, nullptr);
+    if (w) SendMessageW(w, WM_SETFONT, (WPARAM)g_fUI, TRUE);
+    return w;
+}
+static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    switch (m) {
+    case WM_CREATE: {
+        g_edPreview = EditorChild(h, PREVIEW_CLASS, L"", 0, 200);
+        g_edTitle = EditorChild(h, L"STATIC", L"Обрезка: перетащите рамку; стрелки — 0,1%, Shift — 1%", 0, 201);
+        for (int i=0;i<3;i++) {
+            g_edLabels[i] = EditorChild(h, L"STATIC", L"", 0, 210+i);
+            g_edTracks[i] = EditorChild(h, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, ED_BRIGHT+i);
+            SendMessageW(g_edTracks[i], TBM_SETRANGE, TRUE, MAKELONG(0,200));
+            SendMessageW(g_edTracks[i], TBM_SETPAGESIZE, 0, 10);
+        }
+        g_edMirror[0] = EditorChild(h, L"BUTTON", L"Отразить по горизонтали", WS_TABSTOP | BS_AUTOCHECKBOX, ED_FLIP_X);
+        g_edMirror[1] = EditorChild(h, L"BUTTON", L"Отразить по вертикали", WS_TABSTOP | BS_AUTOCHECKBOX, ED_FLIP_Y);
+        const wchar_t* labels[] = {L"Сбросить всё",L"Весь кадр",L"Обрезка 16:9",L"Обрезка 4:3",L"Обрезка 1:1",L"Применить",L"Отмена", p_userPause.load() ? L"Продолжить видео" : L"Пауза видео"};
+        int ids[] = {ED_RESET,ED_FREE,ED_169,ED_43,ED_11,ED_APPLY,ED_CANCEL,ED_PAUSE};
+        for(int i=0;i<8;i++) g_edButtons[i]=EditorChild(h,L"BUTTON",labels[i],WS_TABSTOP | BS_PUSHBUTTON,ids[i]);
+        SetEditorLabels(); EditorLayout(h);
+        g_previewMessage = false; g_previewWindow = g_edPreview; p_repaint = true;
+        return 0;
+    }
+    case WM_SIZE: if (g_edPreview) EditorLayout(h); return 0;
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* mi=(MINMAXINFO*)lp; mi->ptMinTrackSize.x=S(800); mi->ptMinTrackSize.y=S(620); return 0;
+    }
+    case WM_HSCROLL:
+        for(int i=0;i<3;i++) if ((HWND)lp == g_edTracks[i]) {
+            int val=(int)SendMessageW(g_edTracks[i],TBM_GETPOS,0,0);
+            if(i==0) g_editDraft.brightness=val-100; else if(i==1) g_editDraft.contrast=val; else g_editDraft.saturation=val;
+            SetEditorLabels(); PublishEdit(); break;
+        }
+        return 0;
+    case WM_COMMAND:
+        switch(LOWORD(wp)) {
+        case ED_RESET: g_editDraft=VideoEdit{}; SetEditorLabels(); PublishEdit(); break;
+        case ED_FREE: EditorPreset(0); break;
+        case ED_169: EditorPreset(16.0/9.0); break;
+        case ED_43: EditorPreset(4.0/3.0); break;
+        case ED_11: EditorPreset(1.0); break;
+        case ED_PAUSE:
+            p_userPause = !p_userPause.load();
+            SetWindowTextW(g_edButtons[7], p_userPause.load() ? L"Продолжить видео" : L"Пауза видео");
+            InvalidateRect(g_main, nullptr, FALSE);
+            break;
+        case ED_FLIP_X: g_editDraft.flipX = SendMessageW(g_edMirror[0], BM_GETCHECK, 0, 0) == BST_CHECKED; PublishEdit(); break;
+        case ED_FLIP_Y: g_editDraft.flipY = SendMessageW(g_edMirror[1], BM_GETCHECK, 0, 0) == BST_CHECKED; PublishEdit(); break;
+        case ED_APPLY: CloseEditor(true); break;
+        case ED_CANCEL: CloseEditor(false); break;
+        }
+        return 0;
+    case WM_CLOSE: CloseEditor(false); return 0;
+    }
+    return DefWindowProcW(h,m,wp,lp);
+}
+static void OpenEditor() {
+    if (g_editor) { SetForegroundWindow(g_editor); return; }
+    if (g_sel < 0 || g_sel != g_active || g_pendingAction || !p_thread || WaitForSingleObject(p_thread,0) != WAIT_TIMEOUT) {
+        MessageBoxW(g_main, L"Выберите и запустите видео, затем откройте редактор.", L"Редактирование", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    g_editorPath = g_items[(size_t)g_sel].path;
+    g_editOriginal = g_items[(size_t)g_sel].edit; g_editDraft = g_editOriginal;
+    g_editor = CreateWindowExW(WS_EX_DLGMODALFRAME, EDITOR_CLASS, L"Редактор кадра — LoopDesk",
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, S(1050), S(700), g_main, nullptr, g_hi, nullptr);
+    if (!g_editor) { MessageBoxW(g_main, L"Не удалось открыть редактор.", L"LoopDesk", MB_OK | MB_ICONERROR); return; }
+    ShowWindow(g_editor, SW_SHOW); UpdateWindow(g_editor);
+}
+
 // ------------------------------------------------------------------ main window painting
 static void PaintAll(HDC dc, int W, int H) {
     g_hits.clear();
@@ -1616,7 +1935,7 @@ static void PaintAll(HDC dc, int W, int H) {
     int panelDC = SaveDC(dc);
     IntersectClipRect(dc, rp.left, rp.top, rp.right, rp.bottom);
     int y = topH + S(12) - g_panelScroll;
-    g_volTrack = RECT{}; g_speedTrack = RECT{}; g_trimTrack = RECT{};
+    g_volTrack = RECT{}; g_speedTrack = RECT{};
     if (g_sel >= 0 && g_sel < (int)g_items.size()) {
         Item& it = g_items[(size_t)g_sel];
         // the preview takes whatever height is left after the fixed-size controls below it
@@ -1631,6 +1950,9 @@ static void PaintAll(HDC dc, int W, int H) {
         RECT r2 = {px, y, px + pw, y + S(18)};
         Txt(dc, MetaText(it), r2, g_fSmall, C_DIM);
         y += S(26);
+        RECT editButton = {px, y, px + pw, y + S(34)};
+        Button(dc, editButton, ID_EDIT, L"Редактировать кадр…", IC_NONE, true);
+        y += S(44);
         RECT l1 = {px, y, px + pw, y + 1};
         Fill(dc, l1, C_LINE);
         y += S(10);
@@ -1704,44 +2026,6 @@ static void PaintAll(HDC dc, int W, int H) {
         RECT smin = {px, y, px + S(50), y + S(16)}, smax = {px + pw - S(55), y, px + pw, y + S(16)};
         Txt(dc, L"15%", smin, g_fSmall, C_DIM); Txt(dc, L"200%", smax, g_fSmall, C_DIM, DT_RIGHT | DT_ONE);
         y += S(22);
-
-        // Two handles select a playback interval; the source file is unchanged.
-        RECT trimLabel = {px, y, px + pw, y + S(20)};
-        Txt(dc, L"ФРАГМЕНТ ВИДЕО", trimLabel, g_fSmall, C_DIM);
-        y += S(22);
-        if (it.dur > 0.1 && it.dur < 2592000.0) {
-            long long duration = (long long)(it.dur * 1000.0);
-            long long from = std::clamp(it.trimStartMs, 0LL, duration);
-            long long to = it.trimEndMs < 0 ? duration : std::clamp(it.trimEndMs, from, duration);
-            wchar_t tb[100];
-            _snwprintf(tb, 99, L"%lld:%02lld.%01lld — %lld:%02lld.%01lld",
-                       from / 60000, (from / 1000) % 60, (from / 100) % 10,
-                       to / 60000, (to / 1000) % 60, (to / 100) % 10); tb[99] = 0;
-            RECT times = {px, y, px + pw - S(85), y + S(22)};
-            Txt(dc, tb, times, g_fSmall, C_TEXT);
-            RECT reset = {px + pw - S(80), y - S(2), px + pw, y + S(23)};
-            Button(dc, reset, ID_TRIM_RESET, L"Сброс", IC_NONE, false);
-            y += S(27);
-            RECT track = {px + S(8), y + S(5), px + pw - S(8), y + S(11)};
-            g_trimTrack = track;
-            int a = track.left + (int)((track.right - track.left) * (double)from / duration);
-            int b = track.left + (int)((track.right - track.left) * (double)to / duration);
-            Round(dc, track, S(6), C_TRACK, C_TRACK);
-            RECT range = {a, track.top, b, track.bottom}; Fill(dc, range, C_ACC);
-            HGDIOBJ ob = SelectObject(dc, GetStockObject(DC_BRUSH)), op = SelectObject(dc, GetStockObject(DC_PEN));
-            SetDCBrushColor(dc, RGB(255,255,255)); SetDCPenColor(dc, C_ACC);
-            int cy = (track.top + track.bottom) / 2, rr = S(8);
-            Ellipse(dc, a - rr, cy - rr, a + rr + 1, cy + rr + 1);
-            Ellipse(dc, b - rr, cy - rr, b + rr + 1, cy + rr + 1);
-            SelectObject(dc, ob); SelectObject(dc, op);
-            RECT th = {px, y - S(5), px + pw, y + S(23)};
-            g_hits.push_back({th, ID_TRIM});
-            y += S(25);
-        } else {
-            RECT hint = {px, y, px + pw, y + S(35)};
-            Txt(dc, L"Ожидание длительности видео…", hint, g_fSmall, C_DIM);
-            y += S(35);
-        }
 
         // placement
         RECT rf = {px, y, px + pw, y + S(20)};
@@ -1834,7 +2118,7 @@ static void PlaceEdit() {
 static int HitAt(POINT pt) {
     for (size_t i = g_hits.size(); i-- > 0;) {
         int id = g_hits[i].id;
-        if ((id == ID_VOL || id == ID_SPEED || id == ID_TRIM || id == ID_TRIM_RESET ||
+        if ((id == ID_VOL || id == ID_SPEED || id == ID_EDIT ||
              id == ID_REMOVE || (id >= ID_FIT0 && id <= ID_FIT2) ||
              id == ID_AUTORUN || id == ID_FSPAUSE || id == ID_ECOPAUSE) && !PtInRect(&g_panelRc, pt)) continue;
         if (PtInRect(&g_hits[i].r, pt)) return id;
@@ -1861,33 +2145,6 @@ static void SetSpeedFromX(int x) {
     g_items[(size_t)g_sel].speed = v;
     if (g_sel == g_active) p_speed = v;
     InvalidateRect(g_main, &g_panelRc, FALSE);
-}
-static void SetTrimFromX(int x) {
-    if (g_sel < 0 || g_sel >= (int)g_items.size()) return;
-    Item& it = g_items[(size_t)g_sel];
-    int width = (int)(g_trimTrack.right - g_trimTrack.left);
-    if (width <= 0 || it.dur <= 0.1 || it.dur >= 2592000.0) return;
-    long long duration = (long long)(it.dur * 1000.0);
-    long long v = (long long)((double)std::clamp(x - (int)g_trimTrack.left, 0, width) * duration / width + 0.5);
-    long long gap = std::min(100LL, duration);
-    if (g_trimHandle == 0) {
-        long long end = it.trimEndMs < 0 ? duration : std::clamp(it.trimEndMs, gap, duration);
-        it.trimStartMs = std::clamp(v, 0LL, end - gap);
-    } else {
-        long long start = std::clamp(it.trimStartMs, 0LL, duration - gap);
-        long long end = std::clamp(v, start + gap, duration);
-        it.trimEndMs = end >= duration ? -1 : end;
-    }
-    InvalidateRect(g_main, &g_panelRc, FALSE);
-}
-static void ApplyTrim() {
-    if (g_sel < 0 || g_sel >= (int)g_items.size()) return;
-    if (g_sel == g_active) {
-        p_trimStartMs = g_items[(size_t)g_sel].trimStartMs;
-        p_trimEndMs = g_items[(size_t)g_sel].trimEndMs;
-        ++p_trimGen; // the player applies the seek on its own thread
-    }
-    SaveConfig();
 }
 static void AddFiles(const std::vector<std::wstring>& files) {
     int first = -1;
@@ -1988,13 +2245,7 @@ static void Command(HWND h, int id) {
     case ID_STOP: StopWallpaper(); break;
     case ID_OK: HideMain(); break;
     case ID_REMOVE: RemoveItem(g_sel); break;
-    case ID_TRIM_RESET:
-        if (g_sel >= 0 && g_sel < (int)g_items.size()) {
-            Item& it = g_items[(size_t)g_sel]; it.trimStartMs = 0; it.trimEndMs = -1;
-            if (g_sel == g_active) { p_trimStartMs = 0; p_trimEndMs = -1; ++p_trimGen; }
-            SaveConfig(); InvalidateRect(h, nullptr, FALSE);
-        }
-        break;
+    case ID_EDIT: OpenEditor(); break;
     case ID_FIT0: case ID_FIT1: case ID_FIT2:
         if (g_sel >= 0 && g_sel < (int)g_items.size() && g_items[(size_t)g_sel].fit != id - ID_FIT0) {
             g_items[(size_t)g_sel].fit = id - ID_FIT0;
@@ -2026,6 +2277,7 @@ static void Shutdown() {
     static bool done = false;
     if (done) return;
     done = true;
+    CloseEditor(false);
     SaveConfig();  // remembers the active wallpaper for the next start
     bool stopped = StopPlayer();
     if (stopped) DestroyWall();
@@ -2125,7 +2377,6 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (g_dragControl) {
             if (g_dragControl == ID_VOL) SetVolFromX(pt.x);
             else if (g_dragControl == ID_SPEED) SetSpeedFromX(pt.x);
-            else if (g_dragControl == ID_TRIM) SetTrimFromX(pt.x);
             return 0;
         }
         if (!g_tracking) {
@@ -2151,20 +2402,11 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         SetFocus(h);
         int id = HitAt(pt);
-        if (id == ID_VOL || id == ID_SPEED || id == ID_TRIM) {
+        if (id == ID_VOL || id == ID_SPEED) {
             g_lastControl = id;
-            if (id == ID_TRIM && g_sel >= 0 && g_items[(size_t)g_sel].dur > 0) {
-                Item& it = g_items[(size_t)g_sel];
-                double duration = it.dur * 1000.0;
-                double x = std::clamp((double)(pt.x - g_trimTrack.left) / (g_trimTrack.right - g_trimTrack.left), 0.0, 1.0) * duration;
-                double end = it.trimEndMs < 0 ? duration : (double)it.trimEndMs;
-                g_trimHandle = std::abs(x - it.trimStartMs) <= std::abs(x - end) ? 0 : 1;
-            }
             g_dragControl = id;
             SetCapture(h);
-            if (id == ID_VOL) SetVolFromX(pt.x);
-            else if (id == ID_SPEED) SetSpeedFromX(pt.x);
-            else SetTrimFromX(pt.x);
+            if (id == ID_VOL) SetVolFromX(pt.x); else SetSpeedFromX(pt.x);
         } else if (id) {
             g_lastControl = 0;
             Command(h, id);
@@ -2173,16 +2415,15 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_LBUTTONUP:
         if (g_dragControl) {
-            int drag = g_dragControl;
             g_dragControl = 0;
             ReleaseCapture();
-            if (drag == ID_TRIM) ApplyTrim(); else SaveConfig();
+            SaveConfig();
         }
         return 0;
     case WM_CAPTURECHANGED:
         if (g_dragControl) {
-            int drag = g_dragControl; g_dragControl = 0;
-            if (drag == ID_TRIM) ApplyTrim(); else SaveConfig();
+            g_dragControl = 0;
+            SaveConfig();
         }
         return 0;
     case WM_MOUSEWHEEL: {
@@ -2204,28 +2445,11 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         else if (wp == 3) { p_mute = !p_mute.load(); InvalidateRect(h, nullptr, FALSE); }
         return 0;
     case WM_KEYDOWN:
-        if ((wp == VK_LEFT || wp == VK_RIGHT) && g_sel >= 0 && g_sel < (int)g_items.size() &&
-            (g_lastControl == ID_SPEED || g_lastControl == ID_TRIM)) {
+        if ((wp == VK_LEFT || wp == VK_RIGHT) && g_sel >= 0 && g_sel < (int)g_items.size() && g_lastControl == ID_SPEED) {
             Item& it = g_items[(size_t)g_sel];
-            int dir = wp == VK_RIGHT ? 1 : -1;
-            if (g_lastControl == ID_SPEED) {
-                it.speed = std::clamp(it.speed + dir, 15, 200);
-                if (g_sel == g_active) p_speed = it.speed;
-                SaveConfig();
-            } else if (it.dur > 0.1 && it.dur < 2592000.0) {
-                long long dur = (long long)(it.dur * 1000.0), gap = std::min(100LL, dur);
-                if (g_trimHandle == 0) {
-                    long long end = it.trimEndMs < 0 ? dur : std::clamp(it.trimEndMs, gap, dur);
-                    it.trimStartMs = std::clamp(it.trimStartMs + dir * 100LL, 0LL, end - gap);
-                } else {
-                    long long begin = std::clamp(it.trimStartMs, 0LL, dur - gap);
-                    long long end = it.trimEndMs < 0 ? dur : it.trimEndMs;
-                    end = std::clamp(end + dir * 100LL, begin + gap, dur);
-                    it.trimEndMs = end == dur ? -1 : end;
-                }
-                ApplyTrim();
-            }
-            InvalidateRect(h, nullptr, FALSE);
+            it.speed = std::clamp(it.speed + (wp == VK_RIGHT ? 1 : -1), 15, 200);
+            if (g_sel == g_active) p_speed = it.speed;
+            SaveConfig(); InvalidateRect(h, nullptr, FALSE);
         } else if (wp == VK_DELETE && g_sel >= 0) RemoveItem(g_sel);
         else if (wp == VK_SPACE) TogglePause();
         return 0;
@@ -2380,7 +2604,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
     }
     InitializeCriticalSection(&g_cs);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_STANDARD_CLASSES};
+    INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
     InitCommonControlsEx(&icc);
     g_mfOk = LoadMF();
     Log(L"---- LoopDesk start, mf=%d", (int)g_mfOk);
@@ -2408,6 +2632,16 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
     ww.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     RegisterClassExW(&ww);
 
+    WNDCLASSEXW ed = {};
+    ed.cbSize = sizeof(ed); ed.hInstance = hi; ed.lpfnWndProc = EditorProc;
+    ed.lpszClassName = EDITOR_CLASS; ed.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    ed.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); ed.hIcon = g_icon;
+    RegisterClassExW(&ed);
+    WNDCLASSEXW pv = {};
+    pv.cbSize = sizeof(pv); pv.hInstance = hi; pv.lpfnWndProc = PreviewProc;
+    pv.lpszClassName = PREVIEW_CLASS; pv.hCursor = LoadCursorW(nullptr, IDC_CROSS);
+    pv.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    RegisterClassExW(&pv);
     g_optAutorun = AutorunGet();
     HWND h = CreateWindowExW(0, MAIN_CLASS, L"LoopDesk — живые обои", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                              CW_USEDEFAULT, CW_USEDEFAULT, 1200, 760, nullptr, nullptr, hi, nullptr);
