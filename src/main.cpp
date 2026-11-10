@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 #include "resampler.h"
+#include "trim.h"
 
 #ifndef WS_EX_NOREDIRECTIONBITMAP
 #define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
@@ -54,7 +55,7 @@ enum {
     ID_OPEN = 1, ID_PAUSE, ID_STOP, ID_OK, ID_REMOVE,
     ID_FIT0 = 10, ID_FIT1, ID_FIT2,
     ID_AUTORUN = 20, ID_FSPAUSE, ID_ECOPAUSE,
-    ID_VOL = 30, ID_SPEED_DOWN, ID_SPEED_UP,
+    ID_VOL = 30, ID_SPEED, ID_TRIM, ID_TRIM_RESET,
     ID_TILE = 1000,
 };
 enum { IC_NONE, IC_PLUS, IC_PLAY, IC_PAUSE, IC_STOP };
@@ -72,7 +73,8 @@ struct Item {
     std::wstring path, name;
     int volume = 100;  // 0..500 (%)
     int fit = 0;       // 0 fill (cover), 1 fit (letterbox), 2 stretch
-    int speed = 100;   // 50..200 percent
+    int speed = 100;   // 15..200 percent
+    long long trimStartMs = 0, trimEndMs = -1; // -1 means end of file
     HBITMAP thumb = nullptr;
     int tw = 0, th = 0;
     int vw = 0, vh = 0;
@@ -105,8 +107,9 @@ static std::vector<Item> g_items;
 static int g_sel = -1, g_active = -1;
 static std::vector<Hit> g_hits;
 static int g_hot = 0, g_scroll = 0, g_maxScroll = 0;
-static bool g_dragVol = false, g_tracking = false;
-static RECT g_volTrack = {}, g_gridRc = {}, g_panelRc = {};
+static int g_dragControl = 0, g_lastControl = 0, g_trimHandle = 0, g_panelScroll = 0, g_panelMaxScroll = 0;
+static bool g_tracking = false;
+static RECT g_volTrack = {}, g_speedTrack = {}, g_trimTrack = {}, g_gridRc = {}, g_panelRc = {};
 static std::wstring g_filter;
 static bool g_optFsPause = true, g_optAutorun = false, g_mfOk = false;
 static bool g_optEcoPause = false, g_sessionLocked = false, g_displayOff = false;
@@ -121,8 +124,14 @@ static HANDLE g_jobEvt;
 static std::atomic<bool> p_quit{false}, p_userPause{false}, p_autoPause{false}, p_repaint{false};
 static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0}, p_speed{100};
 static std::atomic<bool> p_mute{false};
+static std::atomic<long long> p_trimStartMs{0}, p_trimEndMs{-1};
+static std::atomic<unsigned> p_trimGen{0};
 static HANDLE p_thread = nullptr;
 static std::wstring p_path;
+// UI requests are deferred until the old player thread has actually exited.
+static int g_pendingAction = 0; // 0 none, 1 start, 2 stop
+static std::wstring g_pendingPath;
+static bool g_reattachPending = false, g_abandonedPlayer = false;
 static std::vector<RECT> g_mon;  // monitor rects in wallpaper-window coords, guarded by g_cs
 static std::wstring p_err;       // guarded by g_cs
 
@@ -249,6 +258,7 @@ static void SaveConfig() {
     for (auto& it : g_items) {
         s += "item=" + std::to_string(it.volume) + "|" + std::to_string(it.fit) + "|" + WToU8(it.path) + "\r\n";
         s += "speed=" + std::to_string(it.speed) + "|" + WToU8(it.path) + "\r\n";
+        s += "trim=" + std::to_string(it.trimStartMs) + "|" + std::to_string(it.trimEndMs) + "|" + WToU8(it.path) + "\r\n";
     }
     HANDLE f = CreateFileW((ConfigDir() + L"\\config.txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -308,7 +318,20 @@ static std::wstring LoadConfig() {  // returns path of the wallpaper that was ac
             size_t a = val.find('|');
             if (a != std::string::npos) {
                 int k = FindItem(U8ToW(val.substr(a + 1)));
-                if (k >= 0) g_items[(size_t)k].speed = std::clamp(atoi(val.substr(0, a).c_str()), 50, 200);
+                if (k >= 0) g_items[(size_t)k].speed = std::clamp(atoi(val.substr(0, a).c_str()), 15, 200);
+            }
+        } else if (key == "trim") {
+            size_t a = val.find('|'), b = a == std::string::npos ? a : val.find('|', a + 1);
+            if (b != std::string::npos) {
+                int k = FindItem(U8ToW(val.substr(b + 1)));
+                if (k >= 0) {
+                    long long start = _strtoi64(val.substr(0, a).c_str(), nullptr, 10);
+                    long long end = _strtoi64(val.substr(a + 1, b - a - 1).c_str(), nullptr, 10);
+                    if (start >= 0 && start < 2592000000LL && (end == -1 || (end > start && end <= 2592000000LL))) {
+                        g_items[(size_t)k].trimStartMs = start;
+                        g_items[(size_t)k].trimEndMs = end;
+                    }
+                }
             }
         } else if (key == "item") {
             size_t a = val.find('|'), b = (a == std::string::npos) ? a : val.find('|', a + 1);
@@ -678,6 +701,7 @@ struct Player {
             bool fmtOk = r >= 8000 && r <= 384000 && c >= 1 && c <= 8 &&
                          (aFloat ? b == 32 : (b == 8 || b == 16 || b == 24 || b == 32));
             outCh = 2;  // always stereo so the streaming resampler has a fixed layout
+            resampler.warm();  // prepare before the playback clock starts
             resampler.reset(p_speed.load() / 100.0);
             smoothedGain = (p_mute.load() ? 0.0f : p_volume.load() / 100.0f);
             if (fmtOk && out.Open((int)r, outCh)) hasAudio = true;
@@ -720,7 +744,7 @@ struct Player {
         UINT32 tw = 0, th = 0;
         if (nw && nh && bw > 0 && bh > 0) {
             double sx = bw / (double)nw, sy = bh / (double)nh;
-            double sc = (p_fit.load() == 1) ? std::min(sx, sy) : std::max(sx, sy);
+            double sc = std::min(1.0, (p_fit.load() == 1) ? std::min(sx, sy) : std::max(sx, sy));
             tw = ((UINT32)(nw * sc + 0.5) + 1) & ~1u;
             th = ((UINT32)(nh * sc + 0.5) + 1) & ~1u;
             if (tw < 16 || th < 16 || tw > 8192 || th > 8192) tw = th = 0;
@@ -834,7 +858,7 @@ struct Player {
         default: { int v; memcpy(&v, p, 4); return (float)(v / 2147483648.0); }
         }
     }
-    int SubmitAudio(IMFSample* s) {  // returns number of audio frames queued
+    int SubmitAudio(IMFSample* s, double samplePts, double trimStart, double trimEnd) {  // returns number of audio frames queued
         IMFMediaBuffer* buf = nullptr;
         if (FAILED(s->ConvertToContiguousBuffer(&buf)) || !buf) return 0;
         BYTE* d = nullptr;
@@ -844,6 +868,10 @@ struct Player {
         if (SUCCEEDED(buf->Lock(&d, nullptr, &len)) && d) {
             const int bps = aBits / 8;
             frames = (int)(len / (DWORD)(bps * aCh));
+            // Trim PCM at sample boundaries, not just at compressed packet boundaries.
+            AudioRange range = TrimAudioRange(frames, aRate, samplePts, trimStart, trimEnd);
+            d += (size_t)range.first * (size_t)(bps * aCh);
+            frames = range.last - range.first;
             inputPcm.resize((size_t)frames * 2);
             for (int i = 0; i < frames; i++) {
                 const BYTE* p = d + (size_t)i * (size_t)(bps * aCh);
@@ -921,6 +949,13 @@ struct Player {
             return;
         }
     }
+    HRESULT Seek(double seconds) {
+        PROPVARIANT pv;
+        PropVariantInit(&pv);
+        pv.vt = VT_I8;
+        pv.hVal.QuadPart = (LONGLONG)(seconds * 1e7);
+        return rd->SetCurrentPosition(kTimeFormatDefault, pv);
+    }
     int Play(HRESULT& hr) {
         const double LEAD = 0.12;  // seconds of audio kept queued
         IMFSample *vS = nullptr, *aS = nullptr;
@@ -929,7 +964,14 @@ struct Player {
         double speed = p_speed.load() / 100.0;
         int framesThisPass = 0, skipped = 0, result = R_QUIT;
         bool failed = false;
+        double trimStart = p_trimStartMs.load() / 1000.0;
+        double trimEnd = p_trimEndMs.load() < 0 ? -1 : p_trimEndMs.load() / 1000.0;
+        unsigned trimSeen = p_trimGen.load();
         hr = S_OK;
+        if (trimStart > 0 && FAILED(hr = Seek(trimStart))) {
+            PlayerFail(L"Не удалось перейти к началу выбранного фрагмента", hr);
+            return R_QUIT;
+        }
 
         while (!p_quit.load()) {
             if (layoutSeen != p_layoutGen.load()) {
@@ -937,6 +979,23 @@ struct Player {
                 p_repaint = true;
             }
             const bool paused = p_userPause.load() || p_autoPause.load();
+            if (trimSeen != p_trimGen.load()) {
+                trimStart = p_trimStartMs.load() / 1000.0;
+                long long endMs = p_trimEndMs.load();
+                trimEnd = endMs < 0 ? -1 : endMs / 1000.0;
+                trimSeen = p_trimGen.load();
+                hr = Seek(trimStart);
+                if (FAILED(hr)) {
+                    PlayerFail(L"Не удалось перейти к началу выбранного фрагмента", hr);
+                    break;
+                }
+                out.Reset(paused);
+                resampler.reset(speed);
+                if (vS) { vS->Release(); vS = nullptr; }
+                if (aS) { aS->Release(); aS = nullptr; }
+                vEos = false; aEos = !hasAudio; clockSet = false;
+                framesThisPass = 0; lastV = 0;
+            }
             if (paused) {
                 if (!wasPaused) {
                     wasPaused = true;
@@ -975,14 +1034,22 @@ struct Player {
                 }
                 if (flags & MF_SOURCE_READERF_ENDOFSTREAM) vEos = true;
                 if (s) {
-                    vS = s;
                     vPts = (double)ts / 1e7;
+                    if (vPts + 0.000001 < trimStart) { s->Release(); continue; }
+                    if (trimEnd >= 0 && vPts >= trimEnd) { s->Release(); vEos = true; }
+                    else vS = s;
+                    if (vS) {
                     if (!clockSet) {
                         base = NowSec() - vPts / speed;
                         aUntil = vPts;
                         clockSet = true;
                     }
+                    }
                 }
+            }
+            if (vEos && !clockSet && !vS) {
+                PlayerFail(L"В выбранном фрагменте не найдено кадров", E_FAIL);
+                break;
             }
             // Rebase the media clock continuously when the speed changes.
             double wall = NowSec();
@@ -1020,6 +1087,9 @@ struct Player {
                         aS = s;
                         aPts = (double)ts / 1e7;
                     }
+                    if (trimEnd >= 0 && aPts >= trimEnd) {
+                        aS->Release(); aS = nullptr; aEos = true; break;
+                    }
                     double playAt = std::max(now, aUntil);
                     if (aPts - playAt > 0.03) break;  // not due yet
                     if (playAt - aPts > 0.5) {        // severe desynchronisation only; avoid chopping short packets
@@ -1027,7 +1097,7 @@ struct Player {
                         aS = nullptr;
                         continue;
                     }
-                    SubmitAudio(aS);
+                    SubmitAudio(aS, aPts, trimStart, trimEnd);
                     aUntil = playAt + audioSourceFrames / (double)aRate;
                     aS->Release();
                     aS = nullptr;
@@ -1055,17 +1125,14 @@ struct Player {
                 }
             } else if (vEos && aEos) {
                 double endT = std::max(lastV + frameDur, hasAudio ? aUntil : 0.0);
+                if (trimEnd >= 0) endT = std::min(endT, trimEnd);
                 if (!clockSet || now >= endT - 0.004) {
                     if (framesThisPass == 0) {
                         hr = E_FAIL;
                         failed = true;
                         break;
                     }
-                    PROPVARIANT pv;
-                    PropVariantInit(&pv);
-                    pv.vt = VT_I8;
-                    pv.hVal.QuadPart = 0;
-                    hr = rd->SetCurrentPosition(kTimeFormatDefault, pv);
+                    hr = Seek(trimStart);
                     if (FAILED(hr)) {  // source cannot seek: start over with a fresh reader
                         result = R_REOPEN;
                         break;
@@ -1103,14 +1170,20 @@ static DWORD WINAPI PlayerThread(LPVOID) {
     CoUninitialize();
     return 0;
 }
-static void StopPlayer() {
+static bool StopPlayer() {
     if (p_thread) {
         p_quit = true;
-        WaitForSingleObject(p_thread, 10000);
+        if (WaitForSingleObject(p_thread, 10000) != WAIT_OBJECT_0) {
+            // Never reuse shared player state while a decoder is still running.
+            Log(L"player did not stop in time");
+            g_abandonedPlayer = true;
+            return false;
+        }
         CloseHandle(p_thread);
         p_thread = nullptr;
     }
     p_quit = false;
+    return true;
 }
 static void SetErr(const wchar_t* s) {
     EnterCriticalSection(&g_cs);
@@ -1123,7 +1196,18 @@ static void DestroyWall() {
 }
 static bool StartWallpaper(int idx) {
     if (idx < 0 || idx >= (int)g_items.size()) return false;
-    StopPlayer();
+    if (p_thread && WaitForSingleObject(p_thread, 0) != WAIT_OBJECT_0) {
+        g_pendingAction = 1;
+        g_pendingPath = g_items[(size_t)idx].path;
+        g_sel = idx;
+        p_quit = true;
+        SetTimer(g_main, 3, 50, nullptr);
+        InvalidateRect(g_main, nullptr, FALSE);
+        return true;
+    }
+    if (!StopPlayer()) return false;
+    g_pendingAction = 0; g_pendingPath.clear(); KillTimer(g_main, 3);
+    if (g_reattachPending) { DestroyWall(); g_reattachPending = false; }
     SetErr(L"");
     g_active = idx;
     g_sel = idx;
@@ -1155,15 +1239,33 @@ static bool StartWallpaper(int idx) {
     p_volume = g_items[(size_t)idx].volume;
     p_fit = g_items[(size_t)idx].fit;
     p_speed = g_items[(size_t)idx].speed;
+    p_trimStartMs = g_items[(size_t)idx].trimStartMs;
+    p_trimEndMs = g_items[(size_t)idx].trimEndMs;
+    ++p_trimGen;
     p_userPause = false;
     p_thread = CreateThread(nullptr, 0, PlayerThread, nullptr, 0, nullptr);
+    if (!p_thread) {
+        g_active = -1;
+        SetErr(L"Не удалось запустить поток воспроизведения");
+        SaveConfig(); InvalidateRect(g_main, nullptr, FALSE);
+        return false;
+    }
     Log(L"start: %ls", p_path.c_str());
     SaveConfig();
     InvalidateRect(g_main, nullptr, FALSE);
     return true;
 }
 static void StopWallpaper() {
-    StopPlayer();
+    g_reattachPending = false;
+    if (p_thread && WaitForSingleObject(p_thread, 0) != WAIT_OBJECT_0) {
+        g_pendingAction = 2; g_pendingPath.clear(); p_quit = true;
+        g_active = -1; p_userPause = false; p_autoPause = false;
+        SetTimer(g_main, 3, 50, nullptr);
+        SaveConfig(); InvalidateRect(g_main, nullptr, FALSE);
+        return;
+    }
+    if (!StopPlayer()) return;
+    g_pendingAction = 0; g_pendingPath.clear(); KillTimer(g_main, 3);
     DestroyWall();
     g_active = -1;
     p_userPause = false;
@@ -1350,6 +1452,7 @@ static void Checkbox(HDC dc, int x, int y, int w, int id, const wchar_t* label, 
     g_hits.push_back({hr, id});
 }
 static void DrawThumb(HDC dc, const RECT& r, const Item& it) {
+    if (!RectVisible(dc, &r)) return;
     int rw = r.right - r.left, rh = r.bottom - r.top;
     if (rw <= 0 || rh <= 0) return;
     if (!it.thumb || it.tw <= 0 || it.th <= 0) {
@@ -1478,6 +1581,7 @@ static void PaintAll(HDC dc, int W, int H) {
         std::wstring st;
         COLORREF sc = C_DIM;
         if (!err.empty()) { st = L"Ошибка: " + err; sc = C_WARN; }
+        else if (g_pendingAction) { st = L"Переключение обоев…"; sc = C_DIM; }
         else if (g_active >= 0) {
             const wchar_t* pre = p_userPause.load() ? L"Пауза: "
                                  : (p_autoPause.load() ? L"Автопауза: " : L"Сейчас на рабочем столе: ");
@@ -1509,12 +1613,14 @@ static void PaintAll(HDC dc, int W, int H) {
     RECT pl = {rp.left, rp.top, rp.left + 1, rp.bottom};
     Fill(dc, pl, C_LINE);
     const int px = W - panW + S(16), pw = panW - S(32);
-    int y = topH + S(12);
-    g_volTrack = RECT{};
+    int panelDC = SaveDC(dc);
+    IntersectClipRect(dc, rp.left, rp.top, rp.right, rp.bottom);
+    int y = topH + S(12) - g_panelScroll;
+    g_volTrack = RECT{}; g_speedTrack = RECT{}; g_trimTrack = RECT{};
     if (g_sel >= 0 && g_sel < (int)g_items.size()) {
         Item& it = g_items[(size_t)g_sel];
         // the preview takes whatever height is left after the fixed-size controls below it
-        const int ph = std::clamp((H - botH) - y - S(416), S(64), pw * 9 / 16);
+        const int ph = std::clamp((H - botH) - (topH + S(12)) - S(416), S(64), pw * 9 / 16);
         RECT pv = {px, y, px + pw, y + ph};
         DrawThumb(dc, pv, it);
         Frame(dc, pv, 1, C_LINE);
@@ -1572,16 +1678,70 @@ static void PaintAll(HDC dc, int W, int H) {
         Txt(dc, L"500%", s5, g_fSmall, C_DIM, DT_RIGHT | DT_ONE);
         y += S(26);
 
-        // Playback speed changes continuously; audio pitch follows speed.
-        RECT rspeed = {px, y, px + pw - S(92), y + S(30)};
+        // Speed slider, 15–200% in 1% steps.
+        RECT rspeed = {px, y, px + pw, y + S(20)};
+        Txt(dc, L"СКОРОСТЬ", rspeed, g_fSmall, C_DIM);
         wchar_t sb[80];
-        _snwprintf(sb, 79, L"Скорость: %d%%", it.speed); sb[79] = 0;
-        Txt(dc, sb, rspeed, g_fUI, C_TEXT);
-        RECT sm = {px + pw - S(88), y, px + pw - S(48), y + S(30)};
-        RECT sp = {px + pw - S(40), y, px + pw, y + S(30)};
-        Button(dc, sm, ID_SPEED_DOWN, L"−", IC_NONE, false);
-        Button(dc, sp, ID_SPEED_UP, L"+", IC_NONE, false);
-        y += S(40);
+        _snwprintf(sb, 79, L"%d%%", it.speed); sb[79] = 0;
+        Txt(dc, sb, rspeed, g_fBold, C_TEXT, DT_RIGHT | DT_ONE);
+        y += S(24);
+        RECT speedTrack = {px + S(8), y + S(5), px + pw - S(8), y + S(11)};
+        g_speedTrack = speedTrack;
+        int speedX = speedTrack.left + MulDiv(it.speed - 15, speedTrack.right - speedTrack.left, 185);
+        Round(dc, speedTrack, S(6), C_TRACK, C_TRACK);
+        RECT speedFill = {speedTrack.left, speedTrack.top, speedX, speedTrack.bottom};
+        Fill(dc, speedFill, C_ACC);
+        {
+            HGDIOBJ ob = SelectObject(dc, GetStockObject(DC_BRUSH)), op = SelectObject(dc, GetStockObject(DC_PEN));
+            SetDCBrushColor(dc, RGB(255,255,255)); SetDCPenColor(dc, C_ACC);
+            int cy = (speedTrack.top + speedTrack.bottom) / 2, rr = S(8);
+            Ellipse(dc, speedX - rr, cy - rr, speedX + rr + 1, cy + rr + 1);
+            SelectObject(dc, ob); SelectObject(dc, op);
+        }
+        RECT sh = {px, y - S(5), px + pw, y + S(23)};
+        g_hits.push_back({sh, ID_SPEED});
+        y += S(23);
+        RECT smin = {px, y, px + S(50), y + S(16)}, smax = {px + pw - S(55), y, px + pw, y + S(16)};
+        Txt(dc, L"15%", smin, g_fSmall, C_DIM); Txt(dc, L"200%", smax, g_fSmall, C_DIM, DT_RIGHT | DT_ONE);
+        y += S(22);
+
+        // Two handles select a playback interval; the source file is unchanged.
+        RECT trimLabel = {px, y, px + pw, y + S(20)};
+        Txt(dc, L"ФРАГМЕНТ ВИДЕО", trimLabel, g_fSmall, C_DIM);
+        y += S(22);
+        if (it.dur > 0.1 && it.dur < 2592000.0) {
+            long long duration = (long long)(it.dur * 1000.0);
+            long long from = std::clamp(it.trimStartMs, 0LL, duration);
+            long long to = it.trimEndMs < 0 ? duration : std::clamp(it.trimEndMs, from, duration);
+            wchar_t tb[100];
+            _snwprintf(tb, 99, L"%lld:%02lld.%01lld — %lld:%02lld.%01lld",
+                       from / 60000, (from / 1000) % 60, (from / 100) % 10,
+                       to / 60000, (to / 1000) % 60, (to / 100) % 10); tb[99] = 0;
+            RECT times = {px, y, px + pw - S(85), y + S(22)};
+            Txt(dc, tb, times, g_fSmall, C_TEXT);
+            RECT reset = {px + pw - S(80), y - S(2), px + pw, y + S(23)};
+            Button(dc, reset, ID_TRIM_RESET, L"Сброс", IC_NONE, false);
+            y += S(27);
+            RECT track = {px + S(8), y + S(5), px + pw - S(8), y + S(11)};
+            g_trimTrack = track;
+            int a = track.left + (int)((track.right - track.left) * (double)from / duration);
+            int b = track.left + (int)((track.right - track.left) * (double)to / duration);
+            Round(dc, track, S(6), C_TRACK, C_TRACK);
+            RECT range = {a, track.top, b, track.bottom}; Fill(dc, range, C_ACC);
+            HGDIOBJ ob = SelectObject(dc, GetStockObject(DC_BRUSH)), op = SelectObject(dc, GetStockObject(DC_PEN));
+            SetDCBrushColor(dc, RGB(255,255,255)); SetDCPenColor(dc, C_ACC);
+            int cy = (track.top + track.bottom) / 2, rr = S(8);
+            Ellipse(dc, a - rr, cy - rr, a + rr + 1, cy + rr + 1);
+            Ellipse(dc, b - rr, cy - rr, b + rr + 1, cy + rr + 1);
+            SelectObject(dc, ob); SelectObject(dc, op);
+            RECT th = {px, y - S(5), px + pw, y + S(23)};
+            g_hits.push_back({th, ID_TRIM});
+            y += S(25);
+        } else {
+            RECT hint = {px, y, px + pw, y + S(35)};
+            Txt(dc, L"Ожидание длительности видео…", hint, g_fSmall, C_DIM);
+            y += S(35);
+        }
 
         // placement
         RECT rf = {px, y, px + pw, y + S(20)};
@@ -1616,6 +1776,15 @@ static void PaintAll(HDC dc, int W, int H) {
     Checkbox(dc, px, y, pw, ID_FSPAUSE, L"Пауза: полное или развёрнутое окно", g_optFsPause);
     y += S(26);
     Checkbox(dc, px, y, pw, ID_ECOPAUSE, L"Пауза: батарея / блокировка / экран", g_optEcoPause);
+    y += S(28);
+    g_panelMaxScroll = std::max(0, y + g_panelScroll - (int)rp.bottom + S(8));
+    if (g_panelScroll > g_panelMaxScroll) { g_panelScroll = g_panelMaxScroll; InvalidateRect(g_main, &rp, FALSE); }
+    RestoreDC(dc, panelDC);
+    if (g_panelMaxScroll > 0) {
+        int h = rp.bottom - rp.top, bar = std::max(S(30), h * h / (h + g_panelMaxScroll));
+        int by = rp.top + MulDiv(h - bar, g_panelScroll, g_panelMaxScroll);
+        RECT scrollbar = {rp.right - S(5), by, rp.right - S(2), by + bar}; Fill(dc, scrollbar, C_LINE);
+    }
 
     // ----- bottom bar
     RECT rbm = {0, H - botH, W, H};
@@ -1663,8 +1832,13 @@ static void PlaceEdit() {
     MoveWindow(g_edit, S(12) + S(12), topH + S(10) + S(6), S(280) - S(24), S(20), TRUE);
 }
 static int HitAt(POINT pt) {
-    for (size_t i = g_hits.size(); i-- > 0;)
-        if (PtInRect(&g_hits[i].r, pt)) return g_hits[i].id;
+    for (size_t i = g_hits.size(); i-- > 0;) {
+        int id = g_hits[i].id;
+        if ((id == ID_VOL || id == ID_SPEED || id == ID_TRIM || id == ID_TRIM_RESET ||
+             id == ID_REMOVE || (id >= ID_FIT0 && id <= ID_FIT2) ||
+             id == ID_AUTORUN || id == ID_FSPAUSE || id == ID_ECOPAUSE) && !PtInRect(&g_panelRc, pt)) continue;
+        if (PtInRect(&g_hits[i].r, pt)) return id;
+    }
     return 0;
 }
 static void SetVolFromX(int x) {
@@ -1676,7 +1850,44 @@ static void SetVolFromX(int x) {
     if (std::abs(v - 100) <= 5) v = 100;  // easy to hit the neutral level
     g_items[(size_t)g_sel].volume = v;
     if (g_sel == g_active) p_volume = v;
-    InvalidateRect(g_main, nullptr, FALSE);
+    InvalidateRect(g_main, &g_panelRc, FALSE);
+}
+static void SetSpeedFromX(int x) {
+    if (g_sel < 0 || g_sel >= (int)g_items.size()) return;
+    int width = (int)(g_speedTrack.right - g_speedTrack.left);
+    if (width <= 0) return;
+    int v = 15 + MulDiv(std::clamp(x - (int)g_speedTrack.left, 0, width), 185, width);
+    if (std::abs(v - 100) <= 1) v = 100;
+    g_items[(size_t)g_sel].speed = v;
+    if (g_sel == g_active) p_speed = v;
+    InvalidateRect(g_main, &g_panelRc, FALSE);
+}
+static void SetTrimFromX(int x) {
+    if (g_sel < 0 || g_sel >= (int)g_items.size()) return;
+    Item& it = g_items[(size_t)g_sel];
+    int width = (int)(g_trimTrack.right - g_trimTrack.left);
+    if (width <= 0 || it.dur <= 0.1 || it.dur >= 2592000.0) return;
+    long long duration = (long long)(it.dur * 1000.0);
+    long long v = (long long)((double)std::clamp(x - (int)g_trimTrack.left, 0, width) * duration / width + 0.5);
+    long long gap = std::min(100LL, duration);
+    if (g_trimHandle == 0) {
+        long long end = it.trimEndMs < 0 ? duration : std::clamp(it.trimEndMs, gap, duration);
+        it.trimStartMs = std::clamp(v, 0LL, end - gap);
+    } else {
+        long long start = std::clamp(it.trimStartMs, 0LL, duration - gap);
+        long long end = std::clamp(v, start + gap, duration);
+        it.trimEndMs = end >= duration ? -1 : end;
+    }
+    InvalidateRect(g_main, &g_panelRc, FALSE);
+}
+static void ApplyTrim() {
+    if (g_sel < 0 || g_sel >= (int)g_items.size()) return;
+    if (g_sel == g_active) {
+        p_trimStartMs = g_items[(size_t)g_sel].trimStartMs;
+        p_trimEndMs = g_items[(size_t)g_sel].trimEndMs;
+        ++p_trimGen; // the player applies the seek on its own thread
+    }
+    SaveConfig();
 }
 static void AddFiles(const std::vector<std::wstring>& files) {
     int first = -1;
@@ -1762,7 +1973,8 @@ static void Command(HWND h, int id) {
     if (id >= ID_TILE) {
         int i = id - ID_TILE;
         if (i < 0 || i >= (int)g_items.size()) return;
-        if (i == g_active && p_thread && WaitForSingleObject(p_thread, 0) == WAIT_TIMEOUT) {
+        g_lastControl = 0;
+        if (i == g_active && p_thread && !p_quit.load() && WaitForSingleObject(p_thread, 0) == WAIT_TIMEOUT) {
             g_sel = i;
             InvalidateRect(h, nullptr, FALSE);
         } else {
@@ -1776,13 +1988,11 @@ static void Command(HWND h, int id) {
     case ID_STOP: StopWallpaper(); break;
     case ID_OK: HideMain(); break;
     case ID_REMOVE: RemoveItem(g_sel); break;
-    case ID_SPEED_DOWN: case ID_SPEED_UP:
+    case ID_TRIM_RESET:
         if (g_sel >= 0 && g_sel < (int)g_items.size()) {
-            Item& it = g_items[(size_t)g_sel];
-            it.speed = std::clamp(it.speed + (id == ID_SPEED_UP ? 5 : -5), 50, 200);
-            if (g_sel == g_active) p_speed = it.speed;
-            SaveConfig();
-            InvalidateRect(h, nullptr, FALSE);
+            Item& it = g_items[(size_t)g_sel]; it.trimStartMs = 0; it.trimEndMs = -1;
+            if (g_sel == g_active) { p_trimStartMs = 0; p_trimEndMs = -1; ++p_trimGen; }
+            SaveConfig(); InvalidateRect(h, nullptr, FALSE);
         }
         break;
     case ID_FIT0: case ID_FIT1: case ID_FIT2:
@@ -1817,9 +2027,9 @@ static void Shutdown() {
     if (done) return;
     done = true;
     SaveConfig();  // remembers the active wallpaper for the next start
-    StopPlayer();
-    DestroyWall();
-    if (!g_raised && g_progman) SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, nullptr, SPIF_UPDATEINIFILE);
+    bool stopped = StopPlayer();
+    if (stopped) DestroyWall();
+    if (stopped && !g_raised && g_progman) SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, nullptr, SPIF_UPDATEINIFILE);
     Tray(false);
 }
 
@@ -1866,6 +2076,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             HDC mem = CreateCompatibleDC(dc);
             HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
             HGDIOBJ ob = SelectObject(mem, bmp);
+            IntersectClipRect(mem, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right, ps.rcPaint.bottom);
             PaintAll(mem, rc.right, rc.bottom);
             BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
             SelectObject(mem, ob);
@@ -1911,8 +2122,10 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_MOUSEMOVE: {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        if (g_dragVol) {
-            SetVolFromX(pt.x);
+        if (g_dragControl) {
+            if (g_dragControl == ID_VOL) SetVolFromX(pt.x);
+            else if (g_dragControl == ID_SPEED) SetSpeedFromX(pt.x);
+            else if (g_dragControl == ID_TRIM) SetTrimFromX(pt.x);
             return 0;
         }
         if (!g_tracking) {
@@ -1938,34 +2151,47 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         SetFocus(h);
         int id = HitAt(pt);
-        if (id == ID_VOL) {
-            g_dragVol = true;
+        if (id == ID_VOL || id == ID_SPEED || id == ID_TRIM) {
+            g_lastControl = id;
+            if (id == ID_TRIM && g_sel >= 0 && g_items[(size_t)g_sel].dur > 0) {
+                Item& it = g_items[(size_t)g_sel];
+                double duration = it.dur * 1000.0;
+                double x = std::clamp((double)(pt.x - g_trimTrack.left) / (g_trimTrack.right - g_trimTrack.left), 0.0, 1.0) * duration;
+                double end = it.trimEndMs < 0 ? duration : (double)it.trimEndMs;
+                g_trimHandle = std::abs(x - it.trimStartMs) <= std::abs(x - end) ? 0 : 1;
+            }
+            g_dragControl = id;
             SetCapture(h);
-            SetVolFromX(pt.x);
+            if (id == ID_VOL) SetVolFromX(pt.x);
+            else if (id == ID_SPEED) SetSpeedFromX(pt.x);
+            else SetTrimFromX(pt.x);
         } else if (id) {
+            g_lastControl = 0;
             Command(h, id);
         }
         return 0;
     }
     case WM_LBUTTONUP:
-        if (g_dragVol) {
-            g_dragVol = false;
+        if (g_dragControl) {
+            int drag = g_dragControl;
+            g_dragControl = 0;
             ReleaseCapture();
-            SaveConfig();
+            if (drag == ID_TRIM) ApplyTrim(); else SaveConfig();
         }
         return 0;
     case WM_CAPTURECHANGED:
-        g_dragVol = false;
+        if (g_dragControl) {
+            int drag = g_dragControl; g_dragControl = 0;
+            if (drag == ID_TRIM) ApplyTrim(); else SaveConfig();
+        }
         return 0;
     case WM_MOUSEWHEEL: {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(h, &pt);
         int d = GET_WHEEL_DELTA_WPARAM(wp);
-        if (PtInRect(&g_panelRc, pt) && g_sel >= 0 && g_sel < (int)g_items.size()) {
-            int v = std::clamp(g_items[(size_t)g_sel].volume + (d > 0 ? 5 : -5), 0, 500);
-            g_items[(size_t)g_sel].volume = v;
-            if (g_sel == g_active) p_volume = v;
-            SaveConfig();
+        if (PtInRect(&g_panelRc, pt)) {
+            // Scrolling the panel makes every control accessible on small displays.
+            g_panelScroll = std::clamp(g_panelScroll - d * S(70) / WHEEL_DELTA, 0, g_panelMaxScroll);
         } else {
             g_scroll = std::clamp(g_scroll - d * S(70) / WHEEL_DELTA, 0, g_maxScroll);
         }
@@ -1978,7 +2204,29 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         else if (wp == 3) { p_mute = !p_mute.load(); InvalidateRect(h, nullptr, FALSE); }
         return 0;
     case WM_KEYDOWN:
-        if (wp == VK_DELETE && g_sel >= 0) RemoveItem(g_sel);
+        if ((wp == VK_LEFT || wp == VK_RIGHT) && g_sel >= 0 && g_sel < (int)g_items.size() &&
+            (g_lastControl == ID_SPEED || g_lastControl == ID_TRIM)) {
+            Item& it = g_items[(size_t)g_sel];
+            int dir = wp == VK_RIGHT ? 1 : -1;
+            if (g_lastControl == ID_SPEED) {
+                it.speed = std::clamp(it.speed + dir, 15, 200);
+                if (g_sel == g_active) p_speed = it.speed;
+                SaveConfig();
+            } else if (it.dur > 0.1 && it.dur < 2592000.0) {
+                long long dur = (long long)(it.dur * 1000.0), gap = std::min(100LL, dur);
+                if (g_trimHandle == 0) {
+                    long long end = it.trimEndMs < 0 ? dur : std::clamp(it.trimEndMs, gap, dur);
+                    it.trimStartMs = std::clamp(it.trimStartMs + dir * 100LL, 0LL, end - gap);
+                } else {
+                    long long begin = std::clamp(it.trimStartMs, 0LL, dur - gap);
+                    long long end = it.trimEndMs < 0 ? dur : it.trimEndMs;
+                    end = std::clamp(end + dir * 100LL, begin + gap, dur);
+                    it.trimEndMs = end == dur ? -1 : end;
+                }
+                ApplyTrim();
+            }
+            InvalidateRect(h, nullptr, FALSE);
+        } else if (wp == VK_DELETE && g_sel >= 0) RemoveItem(g_sel);
         else if (wp == VK_SPACE) TogglePause();
         return 0;
     case WM_DROPFILES: {
@@ -2068,7 +2316,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                 p_autoPause = fs;
                 InvalidateRect(h, nullptr, FALSE);
             }
-            if (g_active >= 0) {
+            if (g_active >= 0 && !g_pendingAction) {
                 HWND w = g_wall.load();
                 if (!w || !IsWindow(w)) {  // the shell was restarted: attach again
                     g_wall = nullptr;
@@ -2081,10 +2329,18 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             KillTimer(h, 2);
             if (g_active >= 0) {
                 int a = g_active;
-                StopPlayer();
-                DestroyWall();
+                g_reattachPending = true;
                 StartWallpaper(a);
             }
+        } else if (wp == 3 && g_pendingAction &&
+                   (!p_thread || WaitForSingleObject(p_thread, 0) == WAIT_OBJECT_0)) {
+            KillTimer(h, 3);
+            int action = g_pendingAction; std::wstring path = g_pendingPath;
+            g_pendingAction = 0; g_pendingPath.clear();
+            if (action == 1) {
+                int idx = FindItem(path);
+                if (idx >= 0) StartWallpaper(idx); else StopWallpaper();
+            } else StopWallpaper();
         }
         return 0;
     case WM_DISPLAYCHANGE:
@@ -2182,7 +2438,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    if (g_mfOk) fMFShutdown();
+    if (g_mfOk && !g_abandonedPlayer) fMFShutdown();
     CoUninitialize();
     if (mtx) CloseHandle(mtx);
     return 0;

@@ -15,11 +15,11 @@ static std::vector<float> run(const std::vector<float>& in, int chunk, double sp
 int main() {
     std::vector<float> in(48000*2);
     for (int i=0;i<48000;i++) in[2*i]=in[2*i+1]=0.5f*std::sin(2*3.141592653589793*440*i/48000);
-    for(double speed : {0.5, 1.0, 1.5, 2.0}) {
+    for(double speed : {0.15, 0.25, 0.5, 1.0, 1.5, 2.0}) {
         auto a=run(in, 48000, speed), b=run(in, 173, speed);
         assert(a.size()==b.size());
         for(size_t i=0;i<a.size();i++) { assert(std::isfinite(a[i])); assert(std::abs(a[i]-b[i]) < 1e-6); }
-        assert(std::abs((double)a.size()/2 - 48000/speed) < 40);
+        assert(std::abs((double)a.size()/2 - 48000/speed) < 120);
         for(size_t i=2;i<a.size();i+=2) assert(std::abs(a[i]-a[i-2]) < 0.13);
     }
     // At 2x, suppress tones above the new Nyquist frequency instead of aliasing.
@@ -35,7 +35,7 @@ int main() {
     std::vector<float> joined, part;
     for (size_t pos = 0; pos < in.size()/2; ) {
         size_t n = std::min((size_t)173, in.size()/2-pos);
-        double speed = pos < 12000 ? 1.0 : pos < 24000 ? 2.0 : pos < 36000 ? 0.5 : 1.0;
+        double speed = pos < 12000 ? 1.0 : pos < 24000 ? 2.0 : pos < 36000 ? 0.15 : 1.0;
         changing.process(&in[pos*2], n, speed, part);
         joined.insert(joined.end(), part.begin(), part.end()); pos += n;
     }
