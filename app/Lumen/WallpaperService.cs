@@ -33,6 +33,9 @@ namespace Lumen
             return ok;
         }
 
+        /// <summary>True while the helper process is alive.</summary>
+        public bool EngineAlive { get { return _client.IsRunning; } }
+
         public void Play(VideoEntry entry, bool silent)
         {
             if (entry == null) { throw new ArgumentNullException("entry"); }
@@ -46,20 +49,15 @@ namespace Lumen
 
             _entry = entry;
             string mute = (silent || _mutedOverride || entry.Muted || entry.Volume <= 0) ? "1" : "0";
-            string reply = _client.Send("PLAY|" + entry.File + "|" + entry.Volume + "|" + mute + "|"
-                                        + entry.Fit + "|" + entry.Speed + "|" + entry.EqualizerPreset);
-            if (reply == null)
-            {
-                _entry = null;
-                throw new InvalidOperationException(
-                    "Движок не принял видео: " + (_client.LastError ?? "нет ответа"));
-            }
+            // Queued, not awaited: the window stays responsive even if decoding stalls.
+            _client.Post("PLAY|" + entry.File + "|" + entry.Volume + "|" + mute + "|"
+                         + entry.Fit + "|" + entry.Speed + "|" + entry.EqualizerPreset);
             Raise();
         }
 
         public void Stop()
         {
-            if (_client.IsRunning) { _client.Send("STOP"); }
+            if (_client.IsRunning) { _client.Post("STOP"); }
             _entry = null;
             Raise();
         }
@@ -74,25 +72,25 @@ namespace Lumen
         {
             if (_entry == null) { return; }
             string mute = (_mutedOverride || _entry.Muted || _entry.Volume <= 0) ? "1" : "0";
-            _client.Send("VOL|" + _entry.Volume + "|" + _entry.EqualizerPreset + "|" + mute);
+            _client.Post("VOL|" + _entry.Volume + "|" + _entry.EqualizerPreset + "|" + mute);
         }
 
         public void ApplyFit(string mode)
         {
             if (_entry == null) { return; }
-            _client.Send("FIT|" + mode);
+            _client.Post("FIT|" + mode);
         }
 
         public void ApplySpeed(int percent)
         {
             if (_entry == null) { return; }
-            _client.Send("SPEED|" + percent);
+            _client.Post("SPEED|" + percent);
         }
 
         public void ApplyEqualizer(int preset)
         {
             if (_entry == null) { return; }
-            _client.Send("EQ|" + preset);
+            _client.Post("EQ|" + preset);
         }
 
         public void Reattach()
@@ -100,7 +98,7 @@ namespace Lumen
             if (_entry == null) { return; }
             // Re-sending PLAY rebuilds the surface, which re-attaches it to the desktop.
             string mute = (_mutedOverride || _entry.Muted || _entry.Volume <= 0) ? "1" : "0";
-            _client.Send("PLAY|" + _entry.File + "|" + _entry.Volume + "|" + mute + "|"
+            _client.Post("PLAY|" + _entry.File + "|" + _entry.Volume + "|" + mute + "|"
                          + _entry.Fit + "|" + _entry.Speed + "|" + _entry.EqualizerPreset);
         }
 

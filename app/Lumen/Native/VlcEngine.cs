@@ -15,14 +15,61 @@ namespace Lumen.Native
         private IntPtr _instance;
         private bool _disposed;
 
+        /// <summary>
+        /// Options that keep the engine stable on ordinary desktops: software decoding
+        /// (hardware paths are the usual cause of freezes and crashes in 3.0.x builds),
+        /// no on-screen output, and no window decorations of its own.
+        /// </summary>
+        private static readonly string[] Options =
+        {
+            "--no-video-title-show",
+            "--quiet",
+            "--avcodec-hw=none",
+            "--no-osd",
+            "--no-snapshot-preview",
+            "--drop-late-frames",
+            "--skip-frames",
+            "--no-video-on-top"
+        };
+
         public VlcEngine()
         {
             VlcApi.Load();
-            _instance = VlcApi.libvlc_new(0, IntPtr.Zero);
+            _instance = CreateInstance(Options);
             if (_instance == IntPtr.Zero)
             {
+                Trace2.Write("vlc: instance creation failed");
                 throw new InvalidOperationException(
                     "Не удалось инициализировать libvlc. Проверьте, что папка libvlc находится рядом с Lumen.exe.");
+            }
+        }
+
+        private static IntPtr CreateInstance(string[] options)
+        {
+            IntPtr[] argv = new IntPtr[options.Length];
+            IntPtr[] allocated = new IntPtr[options.Length];
+            try
+            {
+                for (int i = 0; i < options.Length; i++)
+                {
+                    allocated[i] = Marshal.StringToHGlobalAnsi(options[i]);
+                    argv[i] = allocated[i];
+                }
+                IntPtr instance = VlcApi.libvlc_new_argv(options.Length, argv);
+                Trace2.Write("vlc: instance options " + string.Join(" ", options) + " -> " + (instance != IntPtr.Zero ? "ok" : "null"));
+                return instance;
+            }
+            catch (Exception ex)
+            {
+                Trace2.Write("vlc: argv creation failed -> " + ex.Message);
+                return IntPtr.Zero;
+            }
+            finally
+            {
+                for (int i = 0; i < allocated.Length; i++)
+                {
+                    if (allocated[i] != IntPtr.Zero) { Marshal.FreeHGlobal(allocated[i]); }
+                }
             }
         }
 
@@ -130,7 +177,7 @@ namespace Lumen.Native
             }
             VlcApi.libvlc_media_add_option(_media, loop ? "input-repeat=65535" : "input-repeat=0");
             VlcApi.libvlc_media_add_option(_media, "no-audio-time-stretch");
-            VlcApi.libvlc_media_add_option(_media, "avcodec-hw=any");
+            VlcApi.libvlc_media_add_option(_media, "avcodec-hw=none");
             VlcApi.libvlc_media_player_set_media(_player, _media);
             Muted = mute;
         }

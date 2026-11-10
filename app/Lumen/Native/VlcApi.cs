@@ -65,6 +65,9 @@ namespace Lumen.Native
         internal static extern IntPtr libvlc_new(int argc, IntPtr argv);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern IntPtr libvlc_new_argv(int argc, IntPtr[] argv);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void libvlc_release(IntPtr instance);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

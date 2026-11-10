@@ -57,6 +57,7 @@ namespace Lumen
             private StreamWriter _writer;
             private readonly System.Windows.Forms.Timer _pump = new System.Windows.Forms.Timer { Interval = 250 };
             private volatile bool _quit;
+            private string _pendingPlay;
 
             public void Start(string pipeName)
             {
@@ -123,6 +124,7 @@ namespace Lumen
                     switch (cmd)
                     {
                         case "PLAY":
+                            _pendingPlay = line;
                             Play(parts[1], parts.Length > 2 ? parts[2] : "100",
                                  parts.Length > 3 && parts[3] == "1",
                                  parts.Length > 4 ? parts[4] : "cover",
@@ -175,13 +177,16 @@ namespace Lumen
             {
                 if (_surface == null) { throw new InvalidOperationException("surface missing"); }
                 if (!File.Exists(file)) { throw new FileNotFoundException("video not found", file); }
+                Trace2.Write("engine: load " + file);
                 _surface.Load(file, true, muted || volume == "0");
+                Trace2.Write("engine: loaded");
                 _surface.VolumeRequested = int.Parse(volume);
                 _surface.ApplyAudio(int.Parse(volume), int.Parse(eq));
                 _surface.Muted = muted || volume == "0";
                 ApplyFit(fit);
                 _surface.Rate = int.Parse(speed) / 100f;
                 _surface.Play();
+                Trace2.Write("engine: play issued");
             }
 
             private void ApplyFit(string mode)
@@ -196,8 +201,15 @@ namespace Lumen
                 catch (Exception ex) { Trace2.Write("engine: reply failed -> " + ex.Message); }
             }
 
+            private int _ticks;
+
             private void Pump()
             {
+                _ticks++;
+                if (_ticks % 20 == 0)
+                {
+                    Trace2.Write("engine: alive tick " + _ticks + ", playing=" + (_surface != null && _surface.IsPlaying));
+                }
                 if (_quit)
                 {
                     _pump.Stop();
@@ -240,6 +252,8 @@ namespace Lumen
                  + "Headphones|Large Hall|Live|Party|Pop|Reggae|Rock|Ska|Soft|Soft rock|Techno";
         }
 
+        private readonly object _ioLock = new object();
+
         public bool Start()
         {
             Stop();
@@ -276,20 +290,49 @@ namespace Lumen
             }
         }
 
-        /// <summary>Sends one command; returns the reply or null on failure.</summary>
+        /// <summary>
+        /// Fire-and-forget command. Nothing on the UI thread ever waits for the engine,
+        /// so a stalled decoder cannot freeze the window.
+        /// </summary>
+        public void Post(string command)
+        {
+            if (_writer == null) { LastError = "движок не запущен"; return; }
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    lock (_ioLock)
+                    {
+                        if (_writer == null) { return; }
+                        _writer.WriteLine(command);
+                        if (_reader != null) { _reader.ReadLine(); }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LastError = ex.Message;
+                    Trace2.Write("ui: post failed (" + command + ") -> " + ex.Message);
+                }
+            });
+        }
+
+        /// <summary>Sends one command and waits for the reply (bounded by the pipe itself).</summary>
         public string Send(string command)
         {
             if (!IsRunning || _writer == null) { LastError = "движок не запущен"; return null; }
             try
             {
-                _writer.WriteLine(command);
-                string reply = _reader.ReadLine();
-                if (reply != null && reply.StartsWith("ERR"))
+                lock (_ioLock)
                 {
-                    LastError = reply;
-                    Trace2.Write("ui: command error " + command + " -> " + reply);
+                    _writer.WriteLine(command);
+                    string reply = _reader.ReadLine();
+                    if (reply != null && reply.StartsWith("ERR"))
+                    {
+                        LastError = reply;
+                        Trace2.Write("ui: command error " + command + " -> " + reply);
+                    }
+                    return reply;
                 }
-                return reply;
             }
             catch (Exception ex)
             {
