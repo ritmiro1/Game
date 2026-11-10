@@ -20,28 +20,59 @@ namespace VidDesk
 
         private static string _runtimeDir;
 
+        /// <summary>
+        /// Neutral location for the unpacked engine: no product name in the path, no
+        /// spaces, always writable. Chosen so that neither Explorer nor security tools
+        /// associate the folder with the application itself.
+        /// </summary>
         public static string RuntimeDir
         {
             get
             {
                 if (_runtimeDir != null) { return _runtimeDir; }
-                string local = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "VidDesk", "runtime");
-                _runtimeDir = local;
-                try
+                string[] candidates =
                 {
-                    Directory.CreateDirectory(local);
-                    File.WriteAllText(Path.Combine(local, ".probe"), "1");
-                    File.Delete(Path.Combine(local, ".probe"));
-                }
-                catch
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "vlcrt"),
+                    Path.Combine(Path.GetTempPath(), "vlcrt"),
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "rt")
+                };
+                foreach (string dir in candidates)
                 {
-                    // Restricted profile: keep the runtime in TEMP instead.
-                    _runtimeDir = Path.Combine(Path.GetTempPath(), "VidDesk", "runtime");
+                    if (IsWritable(dir))
+                    {
+                        _runtimeDir = dir;
+                        return dir;
+                    }
                 }
+                _runtimeDir = Path.Combine(Path.GetTempPath(), "vlcrt");
                 return _runtimeDir;
             }
+        }
+
+        /// <summary>Old location used by earlier builds; removed to avoid stale DLLs.</summary>
+        public static void CleanLegacyRuntime()
+        {
+            try
+            {
+                string legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VidDesk", "runtime");
+                if (Directory.Exists(legacy)) { Directory.Delete(legacy, true); }
+                string legacyTemp = Path.Combine(Path.GetTempPath(), "VidDesk", "runtime");
+                if (Directory.Exists(legacyTemp)) { Directory.Delete(legacyTemp, true); }
+            }
+            catch { }
+        }
+
+        private static bool IsWritable(string dir)
+        {
+            try
+            {
+                Directory.CreateDirectory(dir);
+                string probe = Path.Combine(dir, ".w");
+                File.WriteAllText(probe, "1");
+                File.Delete(probe);
+                return true;
+            }
+            catch { return false; }
         }
 
         public static bool HasEmbeddedRuntime

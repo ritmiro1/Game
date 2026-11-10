@@ -23,6 +23,12 @@ namespace VidDesk
         [STAThread]
         private static void Main(string[] args)
         {
+            if (HasFlag(args, EngineProbe.Flag))
+            {
+                Environment.ExitCode = EngineProbe.RunChild();
+                return;
+            }
+
             bool safe = HasFlag(args, "--safe");
 
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
@@ -119,6 +125,8 @@ namespace VidDesk
                     Application.DoEvents();
                 }
 
+                RuntimeBootstrap.CleanLegacyRuntime();
+
                 if (safe)
                 {
                     Trace2.Step("boot: SAFE MODE - media engine disabled");
@@ -146,6 +154,19 @@ namespace VidDesk
                 try
                 {
                     if (safe) { throw new InvalidOperationException("Безопасный режим: движок отключён."); }
+
+                    // Native crashes in libvlc cannot be caught in-process, so the engine is
+                    // first exercised in a child process. If it dies there, this process
+                    // survives and shows a readable error instead of vanishing.
+                    Trace2.Step("boot: probing engine in child process");
+                    if (splash != null) { splash.Report("Проверка медиадвижка…"); Application.DoEvents(); }
+                    string probeError;
+                    if (!EngineProbe.Verify(out probeError))
+                    {
+                        throw new InvalidOperationException(
+                            "Медиадвижок не запустился: " + (probeError ?? "неизвестная причина"));
+                    }
+
                     Engine = new VlcEngine();
                     Wallpaper = new WallpaperService(Engine);
                     Trace2.Step("boot: vlc " + VlcEngine.Version);
@@ -219,6 +240,8 @@ namespace VidDesk
                     line("files in runtime: " + files.Length);
                 }
                 RuntimeBootstrap.RegisterNativeSearchPath(rp);
+                string probeError;
+                line("probe (child process): " + (EngineProbe.Verify(out probeError) ? "ok" : "FAILED - " + probeError));
                 try
                 {
                     line("libvlc version: " + VlcEngine.Version);
