@@ -18,7 +18,6 @@
     <FileVersion>1.2.0.0</FileVersion>
     <AssemblyVersion>1.2.0.0</AssemblyVersion>
     <Copyright>VidDesk, 2026. Independent implementation.</Copyright>
-    <DefineConstants>VIDDESK_STAMP</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

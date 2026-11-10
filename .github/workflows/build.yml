@@ -89,23 +89,6 @@ jobs:
           Write-Host "portable folder staged for reference"
 
 
-      - name: Generate build stamp
-        shell: pwsh
-        run: |
-          $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm") + " UTC, run " + $env:GITHUB_RUN_NUMBER
-          $lines = @(
-            'namespace VidDesk',
-            '{',
-            '    internal static class BuildStamp',
-            '    {',
-            '        public const string Value = "' + $stamp + '";',
-            '    }',
-            '}'
-          )
-          Set-Content -Path "app/VidDesk/BuildStamp.cs" -Value $lines -Encoding UTF8
-          Get-Content "app/VidDesk/BuildStamp.cs" | Write-Host
-          Write-Host "stamp: $stamp"
-
       - name: Embed runtime into single EXE
         shell: pwsh
         env:
