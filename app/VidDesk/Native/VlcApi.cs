@@ -120,6 +120,9 @@ namespace VidDesk.Native
         internal static extern int libvlc_video_set_mouse_input(IntPtr player, int on);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern IntPtr libvlc_audio_equalizer_new();
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern IntPtr libvlc_audio_equalizer_new_from_preset(uint index);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

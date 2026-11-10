@@ -40,7 +40,7 @@ namespace VidDesk
             ApplyVolume();
             ApplyFit(entry.Fit);
             ApplySpeed(entry.Speed);
-            _surface.ApplyEqualizerPreset(entry.EqualizerPreset);
+            _surface.ApplyAudio(entry.Volume, entry.EqualizerPreset);
             _surface.Play();
             Raise();
         }
@@ -73,7 +73,8 @@ namespace VidDesk
         {
             if (_surface == null || _entry == null) { return; }
             int v = Math.Max(0, Math.Min(500, _entry.Volume));
-            _surface.Volume = v;
+            _surface.VolumeRequested = v;
+            _surface.ApplyAudio(v, _entry.EqualizerPreset);
             _surface.Muted = _mutedOverride || _entry.Muted || v == 0;
         }
 
@@ -96,7 +97,7 @@ namespace VidDesk
 
         public void ApplyEqualizer(int preset)
         {
-            if (_surface != null) { _surface.ApplyEqualizerPreset(preset); }
+            if (_surface != null && _entry != null) { _surface.ApplyAudio(_entry.Volume, preset); }
         }
 
         public void Reattach()

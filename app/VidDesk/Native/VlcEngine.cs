@@ -147,18 +147,52 @@ namespace VidDesk.Native
             if (_player != IntPtr.Zero) { VlcApi.libvlc_media_player_stop(_player); }
         }
 
-        public void ApplyEqualizerPreset(int presetIndex)
+        /// <summary>
+        /// Applies volume together with an equalizer preset. libvlc's mixer saturates
+        /// around 200 %, so everything above that is delivered as equalizer preamp gain
+        /// (up to +20 dB), which lets the slider honestly reach 500 %.
+        /// </summary>
+        public void ApplyAudio(int volumePercent, int presetIndex)
         {
             if (_player == IntPtr.Zero) { return; }
+            int requested = Math.Max(0, Math.Min(500, volumePercent));
+            VlcApi.libvlc_audio_set_volume(_player, Math.Min(200, requested));
+
+            float gainDb = 0f;
+            if (requested > 200)
+            {
+                gainDb = (float)(20.0 * Math.Log10(requested / 200.0));
+                if (gainDb > 20f) { gainDb = 20f; }
+            }
+
             ReleaseEqualizer();
-            if (presetIndex <= 0) { return; }
-            _equalizer = VlcApi.libvlc_audio_equalizer_new_from_preset((uint)(presetIndex - 1));
+            if (presetIndex > 0)
+            {
+                _equalizer = VlcApi.libvlc_audio_equalizer_new_from_preset((uint)(presetIndex - 1));
+            }
+            else if (gainDb > 0.05f)
+            {
+                _equalizer = VlcApi.libvlc_audio_equalizer_new();
+            }
+            else
+            {
+                return;
+            }
+
             if (_equalizer != IntPtr.Zero)
             {
-                VlcApi.libvlc_audio_equalizer_set_preamp(_equalizer, 0f);
+                if (gainDb > 0.05f) { VlcApi.libvlc_audio_equalizer_set_preamp(_equalizer, gainDb); }
                 VlcApi.libvlc_media_player_set_equalizer(_player, _equalizer);
             }
         }
+
+        public void ApplyEqualizerPreset(int presetIndex)
+        {
+            ApplyAudio(VolumeRequested, presetIndex);
+        }
+
+        /// <summary>Last volume the user asked for, kept so the equalizer can be rebuilt.</summary>
+        public int VolumeRequested { get; set; }
 
         public static List<string> EqualizerPresetNames()
         {
