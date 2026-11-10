@@ -35,6 +35,8 @@
 #include "video_edit.h"
 #include "filter_pool.h"
 #include "audio_gain.h"
+#include "latest_frame.h"
+#include <memory>
 #include "slider_math.h"
 
 #ifndef WS_EX_NOREDIRECTIONBITMAP
@@ -276,12 +278,19 @@ static void SaveConfig() {
         s += "fx=" + std::to_string(e.gamma) + "|" + std::to_string(e.warmth) + "|" +
              std::to_string(e.hue) + "|" + std::to_string((int)e.invert) + "|" + WToU8(it.path) + "\r\n";
     }
-    HANDLE f = CreateFileW((ConfigDir() + L"\\config.txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+    // Write a complete replacement before touching the previous settings file.
+    // A crash or full disk must not silently erase the user's library.
+    const std::wstring dir = ConfigDir();
+    const std::wstring tmp = dir + L"\\config.tmp", dst = dir + L"\\config.txt";
+    HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return;
+    if (f == INVALID_HANDLE_VALUE) { Log(L"config: cannot create temporary file (%lu)", GetLastError()); return; }
     DWORD n = 0;
-    WriteFile(f, s.data(), (DWORD)s.size(), &n, nullptr);
+    bool ok = s.size() <= MAXDWORD && WriteFile(f, s.data(), (DWORD)s.size(), &n, nullptr) && n == s.size();
+    if (ok) ok = FlushFileBuffers(f) != FALSE;
     CloseHandle(f);
+    if (ok) ok = MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    if (!ok) { Log(L"config: failed to save settings (%lu)", GetLastError()); DeleteFileW(tmp.c_str()); }
 }
 static void QueueThumb(const std::wstring& p) {
     EnterCriticalSection(&g_cs);
@@ -646,6 +655,12 @@ struct Player {
     bool frameProcessed = false;
     VideoEdit appliedColor;
     FilterPool filterPool;
+    struct SampleRelease { void operator()(IMFSample* s) const { if (s) s->Release(); } };
+    using SamplePtr = std::unique_ptr<IMFSample, SampleRelease>;
+    LatestFrameMailbox<SamplePtr> renderMailbox;
+    std::thread renderThread;
+    bool renderAsync = false;
+    std::atomic<int> renderReplaced{0};
     HDC previewDC = nullptr;
     HBITMAP previewBmp = nullptr;
     HGDIOBJ previewOld = nullptr;
@@ -975,6 +990,56 @@ struct Player {
         default: { int v; memcpy(&v, p, 4); return (float)(v / 2147483648.0); }
         }
     }
+    void RenderFrame(IMFSample* sample, bool force) {
+        if (layoutSeen != p_layoutGen.load()) LoadLayout();
+        if (sample) CopyFrame(sample);
+        Draw(force);
+    }
+    void StartRenderer() {
+        renderMailbox.open();
+        try {
+            renderThread = std::thread([this] {
+                HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+                LatestFrameMailbox<SamplePtr>::Work work;
+                int draws = 0; double totalMs = 0, maxMs = 0, start = NowSec();
+                while (renderMailbox.wait(work)) {
+                    double before = NowSec();
+                    RenderFrame(work.frame ? work.frame->get() : nullptr, work.redraw);
+                    double ms = (NowSec() - before) * 1000.0;
+                    ++draws; totalMs += ms; maxMs = std::max(maxMs, ms);
+                    if (NowSec() - start >= 10.0) {
+                        int replaced = renderReplaced.exchange(0);
+                        if (replaced || maxMs > 25.0)
+                            Log(L"perf: renderer draws=%d avg=%.1fms max=%.1fms superseded=%d",
+                                draws, totalMs / draws, maxMs, replaced);
+                        draws = 0; totalMs = maxMs = 0; start = NowSec();
+                    }
+                }
+                GdiFlush();
+                if (SUCCEEDED(co)) CoUninitialize();
+            });
+            renderAsync = true;
+        } catch (...) {
+            renderMailbox.close(); renderAsync = false;
+            Log(L"renderer: thread unavailable; using synchronous fallback");
+        }
+    }
+    void StopRenderer() {
+        if (!renderAsync) return;
+        renderMailbox.close();
+        if (renderThread.joinable()) renderThread.join();
+        renderAsync = false;
+    }
+    void QueueFrame(IMFSample* sample) {
+        if (!renderAsync) { RenderFrame(sample, false); return; }
+        sample->AddRef();
+        if (renderMailbox.submit(SamplePtr(sample))) ++renderReplaced;
+    }
+    void RequestRedraw() {
+        if (renderAsync) renderMailbox.redraw();
+        else RenderFrame(nullptr, true);
+    }
+
     int SubmitAudio(IMFSample* s) {  // returns number of audio frames queued
         IMFMediaBuffer* buf = nullptr;
         if (FAILED(s->ConvertToContiguousBuffer(&buf)) || !buf) return 0;
@@ -1050,7 +1115,9 @@ struct Player {
         for (;;) {
             if (!Open()) return;
             HRESULT hr = S_OK;
+            StartRenderer();
             int r = Play(hr);
+            StopRenderer();
             if (r == R_QUIT) return;
             CloseMedia();
             if (r == R_REOPEN) continue;
@@ -1079,13 +1146,15 @@ struct Player {
         double speed = p_speed.load() / 100.0;
         int framesThisPass = 0, skipped = 0, result = R_QUIT;
         int statDecoded = 0, statDrawn = 0, statDropped = 0;
-        double statStart = NowSec(), statDecodeMs = 0, statDrawMs = 0, statDrawMax = 0;
+        double statStart = NowSec(), statDecodeMs = 0;
+        int requestedLayout = p_layoutGen.load();
         bool failed = false;
         hr = S_OK;
 
         while (!p_quit.load()) {
-            if (layoutSeen != p_layoutGen.load()) {
-                LoadLayout();
+            int layout = p_layoutGen.load();
+            if (requestedLayout != layout) {
+                requestedLayout = layout;
                 p_repaint = true;
             }
             const bool paused = p_userPause.load() || p_autoPause.load();
@@ -1095,7 +1164,7 @@ struct Player {
                     pauseAt = NowSec();
                     out.Pause(true);
                 }
-                if (p_repaint.exchange(false)) Draw(true);
+                if (p_repaint.exchange(false)) RequestRedraw();
                 Sleep(25);
                 continue;
             }
@@ -1104,7 +1173,7 @@ struct Player {
                 base += NowSec() - pauseAt;
                 out.Pause(false);
             }
-            if (p_repaint.exchange(false)) Draw(true);
+            if (p_repaint.exchange(false)) RequestRedraw();
 
             // 1) keep one decoded video frame waiting
             if (!vS && !vEos) {
@@ -1120,12 +1189,14 @@ struct Player {
                     break;
                 }
                 if (flags & (MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED | MF_SOURCE_READERF_NATIVEMEDIATYPECHANGED)) {
+                    StopRenderer(); // drain all users of the old DIB before replacing it
                     if (!QueryVideoType()) {
                         if (s) s->Release();
                         hr = E_FAIL;
                         failed = true;
                         break;
                     }
+                    StartRenderer();
                 }
                 if (flags & MF_SOURCE_READERF_ENDOFSTREAM) vEos = true;
                 if (s) {
@@ -1199,20 +1270,16 @@ struct Player {
                 if (d <= 0.001) {
                     bool late = d / speed < -0.12;
                     if (!late || ++skipped > 4) {
-                        double start = NowSec();
-                        CopyFrame(vS);
-                        Draw();
-                        double ms = (NowSec() - start) * 1000.0;
-                        statDrawMs += ms; statDrawMax = std::max(statDrawMax, ms); ++statDrawn;
+                        QueueFrame(vS);
+                        ++statDrawn;
                         skipped = 0;
                     } else ++statDropped;
                     if (NowSec() - statStart >= 10.0 && statDecoded > 0) {
-                        if (statDropped > 0 || statDrawMax > 25.0 || statDecodeMs / statDecoded > 20.0)
-                            Log(L"perf: video reads=%d avg=%.1fms draws=%d avg=%.1fms max=%.1fms dropped=%d speed=%d%%",
-                                statDecoded, statDecodeMs/statDecoded, statDrawn, statDrawn ? statDrawMs/statDrawn : 0.0,
-                                statDrawMax, statDropped, p_speed.load());
+                        if (statDropped > 0 || statDecodeMs / statDecoded > 20.0)
+                            Log(L"perf: video reads=%d avg=%.1fms queued=%d dropped=%d speed=%d%%",
+                                statDecoded, statDecodeMs/statDecoded, statDrawn, statDropped, p_speed.load());
                         statStart = NowSec(); statDecoded = statDrawn = statDropped = 0;
-                        statDecodeMs = statDrawMs = statDrawMax = 0;
+                        statDecodeMs = 0;
                     }
                     if (vPts > lastV && vPts - lastV < 0.5) frameDur = vPts - lastV;
                     lastV = vPts;
@@ -1950,13 +2017,13 @@ static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         g_edMirror[0] = EditorChild(h, L"BUTTON", L"Отразить по горизонтали", WS_TABSTOP | BS_OWNERDRAW, ED_FLIP_X);
         g_edMirror[1] = EditorChild(h, L"BUTTON", L"Отразить по вертикали", WS_TABSTOP | BS_OWNERDRAW, ED_FLIP_Y);
         g_edMirror[2] = EditorChild(h, L"BUTTON", L"Инверсия цветов", WS_TABSTOP | BS_OWNERDRAW, ED_INVERT);
-        const wchar_t* labels[] = {L"Сбросить всё",L"Весь кадр",L"Обрезка 16:9",L"Обрезка 4:3",L"Обрезка 1:1",L"Применить",L"Отмена", L"Оживить предпросмотр", g_editorDark ? L"Тема: чёрная" : L"Тема: светлая"};
+        const wchar_t* labels[] = {L"Сбросить всё",L"Весь кадр",L"Обрезка 16:9",L"Обрезка 4:3",L"Обрезка 1:1",L"Применить",L"Отмена", L"Остановить кадр", g_editorDark ? L"Тема: чёрная" : L"Тема: светлая"};
         int ids[] = {ED_RESET,ED_FREE,ED_169,ED_43,ED_11,ED_APPLY,ED_CANCEL,ED_PAUSE,ED_THEME};
         for(int i=0;i<9;i++) g_edButtons[i]=EditorChild(h,L"BUTTON",labels[i],WS_TABSTOP | BS_OWNERDRAW,ids[i]);
         SetEditorLabels(); EditorLayout(h);
         g_previewMessage = false;
         EnterCriticalSection(&g_cs);
-        g_previewWindow = g_edPreview; g_previewFrozen = true; g_previewRefresh = true;
+        g_previewWindow = g_edPreview; g_previewFrozen = false; g_previewRefresh = true;
         LeaveCriticalSection(&g_cs);
         p_repaint = true;
         return 0;

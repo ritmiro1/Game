@@ -1,0 +1,42 @@
+name: Windows checks
+on:
+  push:
+    branches: ["arena/1c7b5050-game"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build and test tools
+        run: python -m pip install ziglang imageio-ffmpeg
+      - name: Build Windows app
+        shell: bash
+        run: ./build.sh
+      - name: Run algorithm and concurrency tests on Windows
+        shell: pwsh
+        run: |
+          foreach ($test in @('resampler','slider_math','video_edit','audio_gain','filter_pool','latest_frame')) {
+            python -m ziglang c++ -target x86_64-windows-gnu -std=c++17 -O2 -static "tests/$test.cpp" -o "$env:RUNNER_TEMP/$test.exe"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & "$env:RUNNER_TEMP/$test.exe"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Generate synthetic test video
+        shell: pwsh
+        run: |
+          python -c "import imageio_ffmpeg, subprocess, os; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-y','-f','lavfi','-i','testsrc2=size=320x240:rate=30:duration=2','-f','lavfi','-i','sine=frequency=440:sample_rate=48000:duration=2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',os.path.join(os.environ['RUNNER_TEMP'],'sample.mp4')], check=True)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test real Media Foundation decoding and renderer
+        shell: pwsh
+        run: |
+          python -m ziglang c++ -target x86_64-windows-gnu -std=c++17 -O2 -static -municode tests/windows_smoke.cpp res/app.rc -o "$env:RUNNER_TEMP/smoke.exe" -luser32 -lgdi32 -lshell32 -lole32 -lcomdlg32 -lcomctl32 -ladvapi32 -lwinmm -lwtsapi32 -luuid
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/smoke.exe" "$env:RUNNER_TEMP/sample.mp4"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
