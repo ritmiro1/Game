@@ -20,7 +20,14 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Build
-        run: dotnet build app/VidDesk/VidDesk.csproj -c Release -v minimal
+        shell: pwsh
+        run: |
+          $out = dotnet build app/VidDesk/VidDesk.csproj -c Release -v minimal 2>&1 | Out-String
+          Write-Host $out
+          "### build output`n``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          $out | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          if ($LASTEXITCODE -ne 0) { throw "dotnet build failed" }
 
       - name: Fetch media runtime
         shell: pwsh
