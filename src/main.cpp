@@ -33,6 +33,8 @@
 #include <vector>
 #include "resampler.h"
 #include "video_edit.h"
+#include "filter_pool.h"
+#include "audio_gain.h"
 #include "slider_math.h"
 
 #ifndef WS_EX_NOREDIRECTIONBITMAP
@@ -627,12 +629,6 @@ static void PlayerFail(const wchar_t* what, HRESULT hr) {
     Log(L"player: %ls", b);
     PostMessageW(g_main, WM_APP_STATE, 0, 0);
 }
-static inline float Limit(float x) {  // linear up to 0.8, then a smooth knee that never exceeds 1.0
-    float a = fabsf(x);
-    if (a <= 0.8f) return x;
-    float y = 0.8f + 0.2f * tanhf((a - 0.8f) / 0.2f);
-    return x < 0 ? -y : y;
-}
 
 struct Player {
     IMFSourceReader* rd = nullptr;
@@ -649,6 +645,7 @@ struct Player {
     std::vector<BYTE> rawFrame;
     bool frameProcessed = false;
     VideoEdit appliedColor;
+    FilterPool filterPool;
     HDC previewDC = nullptr;
     HBITMAP previewBmp = nullptr;
     HGDIOBJ previewOld = nullptr;
@@ -876,7 +873,7 @@ struct Player {
     void CapturePreview(bool force, const RECT& visible) {
         HWND target = g_previewWindow.load();
         bool refresh = g_previewRefresh.load();
-        if (!target || (g_previewFrozen.load() && !refresh) || (!force && !refresh && NowSec() - previewAt < 1.0 / 30.0)) return;
+        if (!target || (g_previewFrozen.load() && !refresh) || (!force && !refresh && NowSec() - previewAt < 1.0 / 65.0)) return;
         int aw = visible.right - visible.left, ah = visible.bottom - visible.top;
         if (aw <= 0 || ah <= 0) return;
         double scale = std::min(1.0, 640.0 / std::max(aw, ah));
@@ -895,8 +892,7 @@ struct Player {
             previewBits = (BYTE*)ptr; previewOld = SelectObject(previewDC, previewBmp);
             previewW = nw; previewH = nh;
         }
-        SetStretchBltMode(previewDC, HALFTONE);
-        SetBrushOrgEx(previewDC, 0, 0, nullptr);
+        SetStretchBltMode(previewDC, COLORONCOLOR);
         BITMAPINFO source = {}; source.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         source.bmiHeader.biWidth = (LONG)dw; source.bmiHeader.biHeight = -(LONG)dh;
         source.bmiHeader.biPlanes = 1; source.bmiHeader.biBitCount = 32; source.bmiHeader.biCompression = BI_RGB;
@@ -932,7 +928,7 @@ struct Player {
                 if (needsColor && !hadColor && rawFrame.empty()) rawFrame.assign(bits, bits + (size_t)dw * dh * 4);
                 if (hadColor && rawFrame.size() == (size_t)dw * dh * 4) memcpy(bits, rawFrame.data(), rawFrame.size());
                 FlipImage(bits, (int)dw, (int)dh, e.flipX, e.flipY);
-                AdjustColors(bits, (size_t)dw * dh, e);
+                filterPool.apply(bits, (size_t)dw * dh, e);
             }
             appliedColor = e; frameProcessed = true;
         }
@@ -1019,8 +1015,7 @@ struct Player {
             for (size_t i = 0; i + 1 < resampled.size(); i += 2) {
                 smoothedGain += (targetGain - smoothedGain) * smoothing;
                 for (int c = 0; c < 2; ++c) {
-                    float v = resampled[i + c] * smoothedGain;
-                    v = smoothedGain > 1.0f ? Limit(v) : std::clamp(v, -1.0f, 1.0f);
+                    float v = ApplyAudioGain(resampled[i + c], smoothedGain);
                     pcm[i + c] = (short)lrintf(v * 32767.0f);
                 }
             }
@@ -1719,8 +1714,7 @@ static LRESULT CALLBACK PreviewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
             bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -ht; bi.bmiHeader.biPlanes = 1;
             bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
-            SetStretchBltMode(dc, HALFTONE);
-            SetBrushOrgEx(dc, 0, 0, nullptr);
+            SetStretchBltMode(dc, COLORONCOLOR);
             StretchDIBits(dc, g_previewImage.left, g_previewImage.top, g_previewImage.right-g_previewImage.left,
                           g_previewImage.bottom-g_previewImage.top, 0, 0, w, ht, g_previewDisplay.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
         }
