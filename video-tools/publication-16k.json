@@ -1,0 +1,19 @@
+{
+  "run_url": "https://github.com/ritmiro1/Game/actions/runs/42899254599",
+  "render_commit": "b18439b328c9bdf5964b6862478706a4b8160265",
+  "status": "success",
+  "release_url": "https://github.com/ritmiro1/Game/releases/tag/video-16k-20261110-cc989019",
+  "width": 8640,
+  "height": 15360,
+  "frames": 1518,
+  "fps": 30,
+  "codec": "AV1",
+  "size": 235982991,
+  "sha256": "a1e91b164efba3b1f7ae278b2c8158b56e560a7834be40afcc50de7c2a7356da",
+  "full_video_url": "https://github.com/ritmiro1/Game/releases/download/video-16k-20261110-cc989019/armorypass-ejoy-16k.mp4",
+  "hd_preview_url": "https://github.com/ritmiro1/Game/releases/download/video-16k-20261110-cc989019/armorypass-ejoy-16k-preview-720p.mp4",
+  "full_validation_report_url": "https://github.com/ritmiro1/Game/releases/download/video-16k-20261110-cc989019/validation-16k.json",
+  "existing_4k_files": "unchanged",
+  "evidence": "Successful renderer validation and GitHub release metadata; SHA-256 agrees with the release notes and asset digest.",
+  "local_playback": "Not claimed: asset downloads redirect to a storage host outside this sandbox network allowlist."
+}
