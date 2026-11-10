@@ -160,6 +160,8 @@ namespace Lumen
                     if (splash != null) { splash.Report("Запуск медиадвижка…"); Application.DoEvents(); }
                     Client = new EngineClient();
                     Wallpaper = new WallpaperService(Client);
+                    // The helper connects immediately and only then loads libvlc, so the
+                    // window opens fast and any engine error is reported as text.
                     if (!Client.Start())
                     {
                         LastError = "Медиадвижок не запустился: " + (Client.LastError ?? "нет ответа");

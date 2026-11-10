@@ -29,6 +29,11 @@ namespace Lumen.Ui
         private readonly ImageList _tiles = new ImageList { ImageSize = new Size(176, 99), ColorDepth = ColorDepth.Depth32Bit };
         private bool _syncing;
         private bool _ready;
+        private int _previewW = 640;
+        private int _previewH = 360;
+        private readonly PictureBox _cover;
+        private readonly Dictionary<string, Image> _covers = new Dictionary<string, Image>(StringComparer.OrdinalIgnoreCase);
+        private string _coverFile;
         private readonly System.Windows.Forms.Timer _cycle;
         private readonly Random _random = new Random();
 
@@ -85,13 +90,26 @@ namespace Lumen.Ui
             };
             top.Controls.Add(tag);
 
-            FlatBtn addBtn = new FlatBtn { Text = "+  Добавить видео", Accent = true, Width = 156, Location = new Point(top.Width - 176, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            addBtn.Click += (s2, e) => AddVideos();
-            top.Controls.Add(addBtn);
+            FlowLayoutPanel topActions = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Right,
+                FlowDirection = FlowDirection.RightToLeft,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(0, 14, 18, 10),
+                BackColor = Pal.Panel,
+                Margin = Padding.Empty
+            };
+            top.Controls.Add(topActions);
 
-            FlatBtn removeBtn = new FlatBtn { Text = "Удалить", Width = 92, Location = new Point(top.Width - 280, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right, Ghost = true };
+            FlatBtn addBtn = new FlatBtn { Text = "+  Добавить видео", Accent = true, Width = 158, Height = 30, Margin = new Padding(8, 0, 0, 0) };
+            addBtn.Click += (s2, e) => AddVideos();
+            topActions.Controls.Add(addBtn);
+
+            FlatBtn removeBtn = new FlatBtn { Text = "Удалить", Width = 92, Height = 30, Ghost = true, Margin = new Padding(8, 0, 0, 0) };
             removeBtn.Click += (s2, e) => RemoveSelected();
-            top.Controls.Add(removeBtn);
+            topActions.Controls.Add(removeBtn);
 
             TableLayoutPanel body = new TableLayoutPanel
             {
@@ -140,6 +158,7 @@ namespace Lumen.Ui
                 HideSelection = false,
                 Margin = Padding.Empty
             };
+            SetDoubleBuffered(_library);
             _library.SelectedIndexChanged += (s2, e) => SyncFromSelection();
             _library.DoubleClick += (s2, e) => ApplySelected();
             left.Controls.Add(_library, 0, 1);
@@ -177,6 +196,15 @@ namespace Lumen.Ui
             _previewHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black, Margin = new Padding(0, 0, 0, 6) };
             right.Controls.Add(_previewHost, 0, 1);
 
+            _cover = new PictureBox
+            {
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.Black,
+                Visible = false
+            };
+            _previewHost.Controls.Add(_cover);
+            _previewHost.Resize += (s2, e) => LayoutPreview();
+
             _previewHint = new Label
             {
                 Text = "Выберите видео в библиотеке и нажмите «Применить».\nРолик ляжет на рабочий стол под иконками.",
@@ -186,6 +214,7 @@ namespace Lumen.Ui
                 BackColor = Color.Transparent
             };
             _previewHost.Controls.Add(_previewHint);
+            _previewHint.BringToFront();
 
             right.Controls.Add(BuildButtons(), 0, 2);
 
@@ -333,25 +362,49 @@ namespace Lumen.Ui
             return props;
         }
 
+        private static void SetDoubleBuffered(Control control)
+        {
+            try
+            {
+                System.Reflection.PropertyInfo pi = typeof(Control).GetProperty(
+                    "DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (pi != null) { pi.SetValue(control, true, null); }
+            }
+            catch { }
+        }
+
         private Panel BuildButtons()
         {
             Panel bar = new Panel { Dock = DockStyle.Fill, BackColor = Pal.Panel, Margin = Padding.Empty };
-            FlatBtn apply = new FlatBtn { Text = "Применить на рабочий стол", Accent = true, Width = 208, Location = new Point(0, 6) };
-            apply.Click += (s, e) => ApplySelected();
-            bar.Controls.Add(apply);
+            FlowLayoutPanel flow = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = false,
+                BackColor = Pal.Panel,
+                Padding = new Padding(0, 6, 0, 6),
+                Margin = Padding.Empty
+            };
+            bar.Controls.Add(flow);
 
-            FlatBtn stop = new FlatBtn { Text = "Остановить", Width = 108, Location = new Point(218, 6), Ghost = true };
+            FlatBtn apply = new FlatBtn { Text = "Применить на рабочий стол", Accent = true, Width = 208, Height = 30, Margin = new Padding(0, 0, 8, 0) };
+            apply.Click += (s, e) => ApplySelected();
+            flow.Controls.Add(apply);
+
+            FlatBtn stop = new FlatBtn { Text = "Остановить", Width = 108, Height = 30, Ghost = true, Margin = new Padding(0, 0, 8, 0) };
             stop.Click += (s, e) =>
             {
                 if (Program.Wallpaper != null) { Program.Wallpaper.Stop(); }
                 Program.State.WallpaperEnabled = false;
                 SettingsStore.Save(Program.State);
             };
-            bar.Controls.Add(stop);
+            flow.Controls.Add(stop);
 
-            FlatBtn open = new FlatBtn { Text = "Открыть папку", Width = 124, Location = new Point(336, 6), Ghost = true };
+            FlatBtn open = new FlatBtn { Text = "Открыть папку", Width = 124, Height = 30, Ghost = true, Margin = Padding.Empty };
             open.Click += (s, e) => OpenDataFolder();
-            bar.Controls.Add(open);
+            flow.Controls.Add(open);
+
             return bar;
         }
 
@@ -367,26 +420,61 @@ namespace Lumen.Ui
                 w = (int)(h * 16.0 / 9.0);
             }
             if (w < 2 || h < 2) { return; }
-            _previewHint.Bounds = new Rectangle((_previewHost.Width - w) / 2, (int)((_previewHost.Height - h) * 0.42), w, h);
+            _previewW = w;
+            _previewH = h;
+            _cover.Bounds = new Rectangle((_previewHost.Width - w) / 2, (_previewHost.Height - h) / 2, w, h);
 
 
         }
 
         private void StartPreview(VideoEntry entry)
         {
-            // Inline video preview needs the native engine, which now lives in a separate
-            // process. Instead of a second engine instance we show a captured frame.
-            if (!_ready || entry == null) { return; }
-            try
+            if (!_ready) { return; }
+            if (entry == null)
             {
-                _previewHint.Text = "";
-                MediaThumb.Begin(entry.File, Math.Max(160, _previewHint.Width), Math.Max(90, _previewHint.Height),
-                    bmp => { });
+                _cover.Visible = false;
+                _previewHint.Visible = true;
+                _previewHint.Text = "Выберите видео в библиотеке и нажмите «Применить».\nРолик ляжет на рабочий стол под иконками.";
+                return;
             }
-            catch (Exception ex)
+
+            Image cached;
+            if (_covers.TryGetValue(entry.File, out cached))
             {
-                Trace2.Write("preview failed: " + ex.Message);
+                ShowCover(cached, entry);
+                return;
             }
+
+            _previewHint.Text = "Загрузка превью…";
+            _previewHint.Visible = true;
+            string file = entry.File;
+            MediaThumb.Begin(file, Math.Max(320, _previewW), Math.Max(180, _previewH), bmp =>
+            {
+                if (IsDisposed || bmp == null) { return; }
+                try
+                {
+                    BeginInvoke((Action)(delegate
+                    {
+                        if (IsDisposed) { bmp.Dispose(); return; }
+                        _covers[file] = bmp;
+                        VideoEntry current = Selected;
+                        if (current != null && string.Equals(current.File, file, StringComparison.OrdinalIgnoreCase))
+                        {
+                            ShowCover(bmp, current);
+                        }
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        private void ShowCover(Image image, VideoEntry entry)
+        {
+            _coverFile = entry.File;
+            _cover.Image = image;
+            _cover.Visible = true;
+            _cover.BringToFront();
+            _previewHint.Visible = false;
         }
 
         private DateTime _cycleStart;
