@@ -199,11 +199,16 @@ namespace VidDesk.Native
         /// <summary>Last volume the user asked for, kept so the equalizer can be rebuilt.</summary>
         public int VolumeRequested { get; set; }
 
+        /// <summary>
+        /// Names of libvlc equalizer presets. Touches no libvlc state when the runtime is
+        /// missing, so the UI can always be built.
+        /// </summary>
         public static List<string> EqualizerPresetNames()
         {
             List<string> names = new List<string> { "Без эквалайзера" };
             try
             {
+                if (VlcApi.ResolveRuntimeFolder() == null) { return names; }
                 uint count = VlcApi.libvlc_audio_equalizer_get_preset_count();
                 for (uint i = 0; i < count; i++)
                 {

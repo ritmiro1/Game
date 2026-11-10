@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Text;
 
 namespace VidDesk
 {
@@ -56,6 +57,28 @@ namespace VidDesk
                 }
                 catch { }
             }
+        }
+
+        /// <summary>Compact exception dump: type, message, inner chain and the first frames.</summary>
+        public static void Dump(Exception ex)
+        {
+            if (ex == null) { return; }
+            StringBuilder sb = new StringBuilder();
+            Exception cur = ex;
+            int depth = 0;
+            while (cur != null && depth < 5)
+            {
+                sb.AppendLine("  [" + depth + "] " + cur.GetType().FullName + ": " + cur.Message);
+                string st = cur.StackTrace;
+                if (!string.IsNullOrEmpty(st))
+                {
+                    string[] lines = st.Split(new[] { Environment.NewLine, "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                    for (int i = 0; i < lines.Length && i < 6; i++) { sb.AppendLine("      " + lines[i].Trim()); }
+                }
+                cur = cur.InnerException;
+                depth++;
+            }
+            Write(sb.ToString());
         }
 
         public static void Step(string msg)

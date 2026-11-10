@@ -23,13 +23,45 @@ namespace VidDesk
         [STAThread]
         private static void Main(string[] args)
         {
+            bool safe = HasFlag(args, "--safe");
+
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
-                Trace2.Write("FATAL unhandled: " + (e.ExceptionObject as Exception));
+            {
+                Exception ex = e.ExceptionObject as Exception;
+                Trace2.Write("FATAL unhandled (terminating=" + e.IsTerminating + "): " + ex);
+                if (ex != null)
+                {
+                    Trace2.Dump(ex);
+                    if (e.IsTerminating) { EmergencyBox(ex, "при аварийном завершении"); }
+                }
+            };
+            AppDomain.CurrentDomain.FirstChanceException += (s, e) =>
+            {
+                string txt = e.Exception == null ? "" : e.Exception.ToString();
+                if (txt.IndexOf("libvlc", StringComparison.OrdinalIgnoreCase) >= 0
+                    || txt.IndexOf("DllNotFound", StringComparison.OrdinalIgnoreCase) >= 0
+                    || txt.IndexOf("EntryPointNotFound", StringComparison.OrdinalIgnoreCase) >= 0
+                    || txt.IndexOf("BadImageFormat", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Trace2.Write("native fault: " + txt);
+                }
+            };
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (s, e) => Fail(e.Exception, "Ошибка интерфейса");
 
             Trace2.Step("==== VidDesk start, pid " + Process.GetCurrentProcess().Id
-                        + ", exe " + Application.ExecutablePath);
+                        + ", exe " + Application.ExecutablePath
+                        + ", clr " + Environment.Version
+                        + ", os " + Environment.OSVersion
+                        + ", 64bit " + Environment.Is64BitProcess
+                        + ", dir " + Environment.CurrentDirectory);
+
+            if (HasFlag(args, "--selftest"))
+            {
+                RunSelfTest(args);
+                return;
+            }
+
 
             bool created = false;
             Mutex mutex = null;
@@ -45,9 +77,7 @@ namespace VidDesk
 
             if (!created)
             {
-                Trace2.Write("another instance is already running");
-                MessageBox.Show("VidDesk уже запущен — ищите его значок в области уведомлений.",
-                    "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Trace2.Write("another instance is already running, forwarding to it");
                 return;
             }
 
@@ -56,7 +86,7 @@ namespace VidDesk
 
             try
             {
-                Boot(args);
+                Boot(args, safe);
             }
             catch (Exception ex)
             {
@@ -73,7 +103,7 @@ namespace VidDesk
             }
         }
 
-        private static void Boot(string[] args)
+        private static void Boot(string[] args, bool safe)
         {
             Stopwatch sw = Stopwatch.StartNew();
             Splash splash = null;
@@ -89,16 +119,33 @@ namespace VidDesk
                     Application.DoEvents();
                 }
 
-                Trace2.Step("boot: ensure runtime");
-                RuntimePath = RuntimeBootstrap.EnsureRuntime(splash);
-                RuntimeBootstrap.RegisterNativeSearchPath(RuntimePath);
-                Trace2.Step("boot: runtime = " + (RuntimePath ?? "<none>"));
+                if (safe)
+                {
+                    Trace2.Step("boot: SAFE MODE - media engine disabled");
+                    RuntimePath = null;
+                }
+                else
+                {
+                    Trace2.Step("boot: ensure runtime");
+                    try
+                    {
+                        RuntimePath = RuntimeBootstrap.EnsureRuntime(splash);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace2.Write("boot: runtime unpack failed -> " + ex);
+                        RuntimePath = RuntimeBootstrap.RuntimeDir;
+                    }
+                    RuntimeBootstrap.RegisterNativeSearchPath(RuntimePath);
+                    Trace2.Step("boot: runtime = " + (RuntimePath ?? "<none>"));
+                }
 
                 State = SettingsStore.Load();
                 Trace2.Step("boot: settings loaded, library=" + (State.Library == null ? -1 : State.Library.Count));
 
                 try
                 {
+                    if (safe) { throw new InvalidOperationException("Безопасный режим: движок отключён."); }
                     Engine = new VlcEngine();
                     Wallpaper = new WallpaperService(Engine);
                     Trace2.Step("boot: vlc " + VlcEngine.Version);
@@ -145,6 +192,92 @@ namespace VidDesk
         {
             Trace2.Write("unhandled: " + ex);
             ShowFatal(ex);
+        }
+
+        /// <summary>
+        /// Entry point used with --selftest: exercises every startup stage and writes a
+        /// full report, without depending on the desktop window at all.
+        /// </summary>
+        private static void RunSelfTest(string[] args)
+        {
+            System.Text.StringBuilder rep = new System.Text.StringBuilder();
+            Action<string> line = delegate(string t) { rep.AppendLine(t); Trace2.Write("selftest: " + t); };
+            try
+            {
+                line("VidDesk selftest " + DateTime.Now.ToString("u"));
+                line("exe: " + Application.ExecutablePath);
+                line("os: " + Environment.OSVersion + " / 64bit process: " + Environment.Is64BitProcess);
+                line("clr: " + Environment.Version);
+                line("embedded runtime: " + RuntimeBootstrap.HasEmbeddedRuntime);
+                line("runtime dir: " + RuntimeBootstrap.RuntimeDir);
+                string rp = RuntimeBootstrap.EnsureRuntime(null);
+                line("resolved runtime: " + (rp ?? "<none>"));
+                if (rp != null)
+                {
+                    string[] files = Directory.GetFiles(rp);
+                    line("libvlc.dll: " + File.Exists(Path.Combine(rp, "libvlc.dll")));
+                    line("files in runtime: " + files.Length);
+                }
+                RuntimeBootstrap.RegisterNativeSearchPath(rp);
+                try
+                {
+                    line("libvlc version: " + VlcEngine.Version);
+                    using (VlcEngine eng = new VlcEngine())
+                    {
+                        line("engine created ok");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    line("ENGINE ERROR: " + ex);
+                }
+                AppState st = SettingsStore.Load();
+                line("settings: library=" + st.Library.Count + " active=" + (st.ActiveFile ?? "<none>"));
+                try
+                {
+                    using (MainWindow w = new MainWindow()) { line("main window constructed ok"); }
+                }
+                catch (Exception ex)
+                {
+                    line("WINDOW ERROR: " + ex);
+                }
+                line("RESULT: " + (rep.ToString().Contains("ERROR") ? "problems found" : "all stages ok"));
+            }
+            catch (Exception ex)
+            {
+                line("SELFTEST CRASH: " + ex);
+            }
+
+            string path = Path.Combine(Path.GetTempPath(), "viddesk-selftest.txt");
+            try { File.WriteAllText(path, rep.ToString()); } catch { }
+            string body = rep.ToString();
+            if (body.Length > 1400) { body = body.Substring(body.Length - 1400); }
+            MessageBox.Show("Результат самопроверки:\r\n\r\n" + body + "\r\n\r\nФайл: " + path,
+                "VidDesk — самопроверка", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private static bool HasFlag(string[] args, string flag)
+        {
+            if (args == null) { return false; }
+            foreach (string a in args)
+            {
+                if (string.Equals(a, flag, StringComparison.OrdinalIgnoreCase)) { return true; }
+            }
+            return false;
+        }
+
+        /// <summary>Window-less error surface for the last moments of a crashing process.</summary>
+        private static void EmergencyBox(Exception ex, string when)
+        {
+            try
+            {
+                string msg = "VidDesk аварийно завершился (" + when + ")." + Environment.NewLine
+                    + (ex == null ? "" : ex.Message) + Environment.NewLine + Environment.NewLine
+                    + "Лог: " + Trace2.Path;
+                MessageBox.Show(msg, "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error,
+                    MessageBoxDefaultButton.Button1, MessageBoxOptions.DefaultDesktopOnly);
+            }
+            catch { }
         }
 
         private static void ShowFatal(Exception ex)
