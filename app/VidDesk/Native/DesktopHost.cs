@@ -138,7 +138,7 @@ namespace VidDesk.Native
         private static extern int GetClassName(IntPtr hWnd, StringBuilder name, int count);
 
         /// <summary>Turns an owned window into a child of the desktop host.</summary>
-        internal static void AttachAsChild(IntPtr hwnd, IntPtr parent, int x, int y, int w, int h)
+        internal static bool AttachAsChild(IntPtr hwnd, IntPtr parent, int x, int y, int w, int h)
         {
             int style = GetWindowLong(hwnd, GWL_STYLE);
             style &= ~WS_POPUP;
@@ -149,8 +149,10 @@ namespace VidDesk.Native
             ex |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
             SetWindowLong(hwnd, GWL_EXSTYLE, ex);
 
-            SetParent(hwnd, parent);
+            IntPtr previous = SetParent(hwnd, parent);
             MoveWindow(hwnd, x, y, w, h, true);
+            // SetParent returns null on failure, or the old parent on success.
+            return previous != IntPtr.Zero || GetWindowLong(hwnd, GWL_STYLE) != 0;
         }
 
         internal static void DetachToDesktop(IntPtr hwnd)

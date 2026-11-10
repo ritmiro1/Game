@@ -45,10 +45,25 @@ namespace VidDesk.Ui
             Icon = AppIcon.Load();
             KeyPreview = true;
 
+            // Deterministic layout: TableLayoutPanel everywhere, so no dock-order surprises.
+            TableLayoutPanel root = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                BackColor = Pal.Bg,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58f));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            Controls.Add(root);
+
             // ---- top bar -------------------------------------------------------
-            Panel top = new Panel { Dock = DockStyle.Top, Height = 58, BackColor = Pal.Panel };
-            Controls.Add(top);
-            top.Paint += (s, e) => e.Graphics.DrawLine(new Pen(Pal.Line), 0, top.Height - 1, top.Width, top.Height - 1);
+            Panel top = new Panel { Dock = DockStyle.Fill, BackColor = Pal.Panel, Margin = Padding.Empty };
+            root.Controls.Add(top, 0, 0);
+            top.Paint += (s2, e) => e.Graphics.DrawLine(new Pen(Pal.Line), 0, top.Height - 1, top.Width, top.Height - 1);
 
             Label brand = new Label
             {
@@ -71,19 +86,45 @@ namespace VidDesk.Ui
             top.Controls.Add(tag);
 
             FlatBtn addBtn = new FlatBtn { Text = "+  Добавить видео", Accent = true, Width = 156, Location = new Point(top.Width - 176, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            addBtn.Click += (s, e) => AddVideos();
+            addBtn.Click += (s2, e) => AddVideos();
             top.Controls.Add(addBtn);
 
             FlatBtn removeBtn = new FlatBtn { Text = "Удалить", Width = 92, Location = new Point(top.Width - 280, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right, Ghost = true };
-            removeBtn.Click += (s, e) => RemoveSelected();
+            removeBtn.Click += (s2, e) => RemoveSelected();
             top.Controls.Add(removeBtn);
 
-            // ---- left library rail --------------------------------------------
-            Panel left = new Panel { Dock = DockStyle.Left, Width = 264, BackColor = Pal.Bg, Padding = new Padding(14, 12, 8, 12) };
-            Controls.Add(left);
+            TableLayoutPanel body = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                BackColor = Pal.Bg,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 268f));
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            root.Controls.Add(body, 0, 1);
 
-            Label libTitle = new Label { Text = "БИБЛИОТЕКА", Font = Pal.Small, ForeColor = Pal.Dim, Dock = DockStyle.Top, Height = 24 };
-            left.Controls.Add(libTitle);
+            // ---- left library rail --------------------------------------------
+            TableLayoutPanel left = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                BackColor = Pal.Bg,
+                Padding = new Padding(14, 12, 8, 6),
+                Margin = Padding.Empty
+            };
+            left.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            left.RowStyles.Add(new RowStyle(SizeType.Absolute, 24f));
+            left.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            left.RowStyles.Add(new RowStyle(SizeType.Absolute, 46f));
+            body.Controls.Add(left, 0, 0);
+
+            Label libTitle = new Label { Text = "БИБЛИОТЕКА", Font = Pal.Small, ForeColor = Pal.Dim, Dock = DockStyle.Fill, Margin = Padding.Empty };
+            left.Controls.Add(libTitle, 0, 0);
 
             _library = new ListView
             {
@@ -96,37 +137,45 @@ namespace VidDesk.Ui
                 MultiSelect = false,
                 FullRowSelect = false,
                 LabelWrap = true,
-                HideSelection = false
+                HideSelection = false,
+                Margin = Padding.Empty
             };
-            _library.SelectedIndexChanged += (s, e) => SyncFromSelection();
-            _library.DoubleClick += (s, e) => ApplySelected();
-            left.Controls.Add(_library);
-            _library.BringToFront();
+            _library.SelectedIndexChanged += (s2, e) => SyncFromSelection();
+            _library.DoubleClick += (s2, e) => ApplySelected();
+            left.Controls.Add(_library, 0, 1);
 
             _status = new Label
             {
-                Dock = DockStyle.Bottom,
-                Height = 46,
+                Dock = DockStyle.Fill,
                 ForeColor = Pal.Dim,
                 Font = Pal.Small,
-                Text = "VLC: " + Native.VlcEngine.Version
+                Margin = Padding.Empty,
+                Text = "Движок: VLC " + Native.VlcEngine.Version
             };
-            left.Controls.Add(_status);
+            left.Controls.Add(_status, 0, 2);
 
             // ---- right side ----------------------------------------------------
-            Panel right = new Panel { Dock = DockStyle.Fill, BackColor = Pal.Panel, Padding = new Padding(16) };
-            Controls.Add(right);
-            right.BringToFront();
+            TableLayoutPanel right = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 4,
+                BackColor = Pal.Panel,
+                Padding = new Padding(16, 10, 16, 10),
+                Margin = Padding.Empty
+            };
+            right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            right.RowStyles.Add(new RowStyle(SizeType.Absolute, 22f));
+            right.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            right.RowStyles.Add(new RowStyle(SizeType.Absolute, 44f));
+            right.RowStyles.Add(new RowStyle(SizeType.Absolute, 244f));
+            body.Controls.Add(right, 1, 0);
 
-            Label previewTitle = new Label { Text = "ПРЕДПРОСМОТР", Font = Pal.Small, ForeColor = Pal.Dim, Dock = DockStyle.Top, Height = 22 };
-            right.Controls.Add(previewTitle);
+            Label previewTitle = new Label { Text = "ПРЕДПРОСМОТР", Font = Pal.Small, ForeColor = Pal.Dim, Dock = DockStyle.Fill, Margin = Padding.Empty };
+            right.Controls.Add(previewTitle, 0, 0);
 
-            Panel bottomDock = BuildButtons();
-            right.Controls.Add(bottomDock);
-
-            _previewHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black, Margin = new Padding(0, 0, 0, 10) };
-            right.Controls.Add(_previewHost);
-            _previewHost.BringToFront();
+            _previewHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black, Margin = new Padding(0, 0, 0, 6) };
+            right.Controls.Add(_previewHost, 0, 1);
 
             _previewHint = new Label
             {
@@ -138,8 +187,12 @@ namespace VidDesk.Ui
             };
             _previewHost.Controls.Add(_previewHint);
 
+            right.Controls.Add(BuildButtons(), 0, 2);
+
             Panel props = BuildProperties();
-            right.Controls.Add(props);
+            props.Dock = DockStyle.Fill;
+            props.Margin = Padding.Empty;
+            right.Controls.Add(props, 0, 3);
 
             _titleLabel = (Label)props.Controls["title"];
             _pathLabel = (Label)props.Controls["path"];
@@ -185,7 +238,7 @@ namespace VidDesk.Ui
 
         private Panel BuildProperties()
         {
-            Panel props = new Panel { Dock = DockStyle.Bottom, Height = 236, BackColor = Pal.Panel };
+            Panel props = new Panel { BackColor = Pal.Panel };
 
             _titleLabel = new Label { Name = "title", Text = "Ничего не выбрано", Font = Pal.Title, ForeColor = Pal.Text, Location = new Point(0, 4), Width = 560, AutoEllipsis = true, Height = 30 };
             props.Controls.Add(_titleLabel);
@@ -270,7 +323,7 @@ namespace VidDesk.Ui
 
         private Panel BuildButtons()
         {
-            Panel bar = new Panel { Dock = DockStyle.Bottom, Height = 42, BackColor = Pal.Panel };
+            Panel bar = new Panel { Dock = DockStyle.Fill, BackColor = Pal.Panel, Margin = Padding.Empty };
             FlatBtn apply = new FlatBtn { Text = "Применить на рабочий стол", Accent = true, Width = 208, Location = new Point(0, 6) };
             apply.Click += (s, e) => ApplySelected();
             bar.Controls.Add(apply);

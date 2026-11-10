@@ -40,12 +40,22 @@ namespace VidDesk
             }
         }
 
+        public bool Attached { get; private set; }
+
         public void AttachToDesktop()
         {
             DesktopHost.RequestWallpaperHost();
             IntPtr host = DesktopHost.GetWallpaperParent();
             Rectangle bounds = DesktopHost.VirtualDesktop();
-            DesktopHost.AttachAsChild(Handle, host, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            Attached = DesktopHost.AttachAsChild(Handle, host, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            if (!Attached)
+            {
+                // Explorer refused the wallpaper layer: fall back to a normal
+                // desktop-level window so the user still sees their video.
+                Attached = false;
+                TopMost = false;
+                Bounds = bounds;
+            }
         }
 
         public void DetachFromDesktop()
