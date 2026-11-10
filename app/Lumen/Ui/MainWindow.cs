@@ -252,6 +252,7 @@ namespace Lumen.Ui
 
             LoadLibrary();
             if (Program.Wallpaper != null) { Program.Wallpaper.StateChanged += (s, e) => UpdateStatus(); }
+            if (Program.Client != null) { Program.Client.Status += OnEngineStatus; }
 
             _cycle = new System.Windows.Forms.Timer { Interval = 1000 };
             _cycle.Tick += (s, e) => CycleTick();
@@ -769,6 +770,8 @@ namespace Lumen.Ui
             {
                 Program.State.ActiveFile = e.File;
                 Program.State.WallpaperEnabled = true;
+                _playbackFailed = false;
+                _playbackDetail = null;
                 Program.Wallpaper.Play(e, Program.State.SilentMode);
                 SettingsStore.Save(Program.State);
                 UpdateStatus();
@@ -779,15 +782,57 @@ namespace Lumen.Ui
             }
         }
 
+        private bool _playbackFailed;
+        private string _playbackDetail;
+
+        private void OnEngineStatus(object sender, EngineStatus status)
+        {
+            try
+            {
+                BeginInvoke((Action)(delegate
+                {
+                    _playbackFailed = status.Kind != "playing";
+                    _playbackDetail = status.Kind == "playing"
+                        ? status.Detail + (string.IsNullOrEmpty(status.Host) ? "" : " · " + status.Host)
+                        : status.Detail;
+                    Trace2.Write("ui: engine status " + status.Kind + " " + status.Detail + " host=" + status.Host);
+                    UpdateStatus();
+                }));
+            }
+            catch { }
+        }
+
         private void UpdateStatus()
         {
             bool active = Program.Wallpaper != null && Program.Wallpaper.IsActive;
             string s = active
                 ? "● Обои запущены: " + Path.GetFileName(Program.Wallpaper.CurrentFile)
                 : "○ Обои остановлены";
-            _status.Text = s + "\n" + (Program.Client == null || !Program.Client.IsRunning
-                ? "Движок не запущен — см. лог"
-                : "Движок: отдельный процесс · " + AppInfo.Short + " · F5 — применить");
+            string second;
+            if (Program.Client == null || !Program.Client.IsRunning)
+            {
+                second = "Движок не запущен — см. лог";
+            }
+            else if (_playbackFailed)
+            {
+                second = "⚠ Видео не воспроизводится: " + (_playbackDetail ?? "нет кадров");
+            }
+            else if (_playbackDetail != null)
+            {
+                second = "▶ " + _playbackDetail;
+            }
+            else
+            {
+                second = AppInfo.Short + " · F5 — применить";
+            }
+
+            _status.Text = s + "\n" + second;
+            if (_playbackFailed && Program.Client != null && Program.Client.IsRunning)
+            {
+                _previewHint.Text = "Видео не воспроизводится." + Environment.NewLine
+                    + (_playbackDetail ?? "") + Environment.NewLine
+                    + "Подробности: " + Trace2.Path;
+            }
             _status.ForeColor = active ? Pal.Accent : Pal.Dim;
         }
 

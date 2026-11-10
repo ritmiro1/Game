@@ -116,6 +116,12 @@ namespace Lumen.Native
         internal static extern void libvlc_audio_set_mute(IntPtr player, int mute);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int libvlc_video_get_size(IntPtr player, uint num, out uint width, out uint height);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern IntPtr libvlc_errmsg();
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern int libvlc_media_player_set_rate(IntPtr player, float rate);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

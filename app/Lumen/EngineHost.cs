@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Collections.Generic;
 using System.IO.Pipes;
 using System.Text;
 using System.Threading;
@@ -51,6 +52,8 @@ namespace Lumen
             private volatile bool _quit;
             private int _ticks;
             private string _lastFile;
+            private int _playbackTicks;
+            private bool _reportedFailure;
 
             public void Start(string pipeName)
             {
@@ -186,6 +189,36 @@ namespace Lumen
                 }
             }
 
+            /// <summary>
+            /// Verifies that decoding actually produced frames and reports problems back to
+            /// the UI, so "applied" never means "silently nothing".
+            /// </summary>
+            private void CheckPlayback()
+            {
+                if (_surface == null || _lastFile == null || _reportedFailure) { return; }
+                _playbackTicks++;
+                if (_playbackTicks % 8 != 0) { return; }
+
+                uint w, h;
+                _surface.GetVideoSize(out w, out h);
+                bool playing = _surface.IsPlaying;
+                string host = _window == null ? "none" : _window.HostKind;
+
+                if (w > 0 && h > 0 && playing)
+                {
+                    Reply("STATUS|playing|" + w + "x" + h + "|" + host);
+                    _reportedFailure = true;   // report success once
+                    return;
+                }
+
+                if (_playbackTicks < 32) { return; }   // give the decoder a few seconds
+
+                string error = _surface.LastError;
+                Reply("STATUS|failed|" + (error == null ? "нет кадров" : error.Replace('|', ' ').Replace('\n', ' '))
+                      + "|" + host + "|" + (playing ? "playing" : "stopped"));
+                _reportedFailure = true;
+            }
+
             /// <summary>Engine and desktop surface are created on the first request only.</summary>
             private void EnsureSurface()
             {
@@ -233,6 +266,7 @@ namespace Lumen
             private void Pump()
             {
                 _ticks++;
+                CheckPlayback();
                 if (_ticks % 20 == 0)
                 {
                     Trace2.Write("engine: alive tick " + _ticks + ", playing=" + (_surface != null && _surface.IsPlaying));
@@ -254,6 +288,15 @@ namespace Lumen
         }
     }
 
+    /// <summary>One playback report coming from the engine process.</summary>
+    internal sealed class EngineStatus : EventArgs
+    {
+        public string Kind;
+        public string Detail;
+        public string Host;
+        public string Extra;
+    }
+
     /// <summary>UI-side handle to the engine helper process.</summary>
     internal sealed class EngineClient : IDisposable
     {
@@ -264,6 +307,54 @@ namespace Lumen
         private string _pipeName;
         private readonly object _io = new object();
         private volatile string _lastError;
+        private Thread _reader_thread;
+
+        /// <summary>Raised for unsolicited STATUS lines from the engine process.</summary>
+        public event EventHandler<EngineStatus> Status;
+
+        internal void RaiseStatus(string line)
+        {
+            string[] p = line.Split('|');
+            EngineStatus status = new EngineStatus
+            {
+                Kind = p.Length > 1 ? p[1] : "unknown",
+                Detail = p.Length > 2 ? p[2] : "",
+                Host = p.Length > 3 ? p[3] : "",
+                Extra = p.Length > 4 ? p[4] : ""
+            };
+            EventHandler<EngineStatus> handler = Status;
+            if (handler != null) { try { handler(this, status); } catch { } }
+        }
+
+        /// <summary>
+        /// Background reader: keeps draining the pipe so unsolicited status messages are
+        /// delivered even when the UI is not sending commands.
+        /// </summary>
+        private void StartReader()
+        {
+            _reader_thread = new Thread(delegate ()
+            {
+                try
+                {
+                    while (true)
+                    {
+                        string line = _reader.ReadLine();
+                        if (line == null) { break; }
+                        if (line.StartsWith("STATUS")) { RaiseStatus(line); }
+                        else if (line.StartsWith("ERR")) { _lastError = line.Substring(4); Trace2.Write("ui: engine error " + line); }
+                        else
+                        {
+                            lock (_io) { _replies.Enqueue(line); Monitor.PulseAll(_io); }
+                        }
+                    }
+                }
+                catch { }
+            });
+            _reader_thread.IsBackground = true;
+            _reader_thread.Start();
+        }
+
+        private readonly Queue<string> _replies = new Queue<string>();
 
         public bool IsRunning
         {
@@ -327,6 +418,7 @@ namespace Lumen
                     return false;
                 }
                 LastError = null;
+                StartReader();
                 return true;
             }
             catch (Exception ex)
@@ -349,12 +441,6 @@ namespace Lumen
                     {
                         if (_writer == null) { return; }
                         _writer.WriteLine(command);
-                        string reply = _reader == null ? null : _reader.ReadLine();
-                        if (reply != null && reply.StartsWith("ERR"))
-                        {
-                            LastError = reply.Substring(4);
-                            Trace2.Write("ui: engine error for '" + command.Split('|')[0] + "': " + LastError);
-                        }
                     }
                 }
                 catch (Exception ex)
@@ -363,6 +449,32 @@ namespace Lumen
                     Trace2.Write("ui: post failed -> " + ex.Message);
                 }
             });
+        }
+
+        /// <summary>Blocking request/response, for diagnostics only.</summary>
+        public string Send(string command)
+        {
+            if (!IsRunning || _writer == null) { LastError = "движок не запущен"; return null; }
+            try
+            {
+                lock (_io)
+                {
+                    _replies.Clear();
+                    _writer.WriteLine(command);
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(20);
+                    while (_replies.Count == 0 && DateTime.UtcNow < deadline)
+                    {
+                        Monitor.Wait(_io, 250);
+                    }
+                    if (_replies.Count == 0) { LastError = "нет ответа движка"; return null; }
+                    return _replies.Dequeue();
+                }
+            }
+            catch (Exception ex)
+            {
+                LastError = ex.Message;
+                return null;
+            }
         }
 
         public void Stop()

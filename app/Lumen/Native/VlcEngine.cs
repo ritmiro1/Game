@@ -165,6 +165,15 @@ namespace Lumen.Native
             get { return _player != IntPtr.Zero && VlcApi.libvlc_media_player_is_playing(_player) != 0; }
         }
 
+        /// <summary>Decoded video size as reported by libvlc (0x0 before the first frame).</summary>
+        public void GetVideoSize(out uint width, out uint height)
+        {
+            width = height = 0;
+            if (_player == IntPtr.Zero) { return; }
+            try { VlcApi.libvlc_video_get_size(_player, 0, out width, out height); }
+            catch { }
+        }
+
         public void Load(string path, bool loop, bool mute)
         {
             if (_player == IntPtr.Zero) { return; }
@@ -187,6 +196,16 @@ namespace Lumen.Native
             if (_player == IntPtr.Zero) { return; }
             int rc = VlcApi.libvlc_media_player_play(_player);
             Trace2.Write("vlc: play rc=" + rc);
+        }
+
+        public string LastError
+        {
+            get
+            {
+                if (_player == IntPtr.Zero) { return null; }
+                try { return VlcApi.libvlc_errmsg(); }
+                catch { return null; }
+            }
         }
 
         public void Pause()

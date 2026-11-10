@@ -6,12 +6,14 @@ using Lumen.Native;
 namespace Lumen
 {
     /// <summary>
-    /// Borderless host window that owns the libvlc video output. Normally reparented
-    /// into the desktop wallpaper layer so it sits underneath the icons.
+    /// Borderless host window that owns the libvlc video output and lives on the desktop
+    /// wallpaper layer, underneath the icons.
     /// </summary>
     internal sealed class WallpaperWindow : Form
     {
         public IntPtr SurfaceHandle { get { return Handle; } }
+        public bool Attached { get; private set; }
+        public string HostKind { get; private set; }
 
         public WallpaperWindow(bool previewMode)
         {
@@ -20,11 +22,7 @@ namespace Lumen
             StartPosition = FormStartPosition.Manual;
             BackColor = Color.Black;
             Text = "Lumen Surface";
-            DoubleBuffered = true;
-            if (previewMode)
-            {
-                TopMost = true;
-            }
+            if (previewMode) { TopMost = true; }
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -34,43 +32,31 @@ namespace Lumen
             get
             {
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= DesktopHost.WS_EX_NOACTIVATE | DesktopHost.WS_EX_TOOLWINDOW;
-                cp.Style |= DesktopHost.WS_POPUP;
+                cp.ExStyle |= 0x08000000 | 0x00000080;   // NOACTIVATE | TOOLWINDOW
+                cp.Style |= unchecked((int)0x80000000);  // start as WS_POPUP
                 return cp;
             }
         }
 
-        public bool Attached { get; private set; }
-
+        /// <summary>Puts this window behind the desktop icons and reports where it landed.</summary>
         public void AttachToDesktop()
         {
-            DesktopHost.RequestWallpaperHost();
-            IntPtr host = DesktopHost.GetWallpaperParent();
-            Rectangle bounds = DesktopHost.VirtualDesktop();
-            Attached = DesktopHost.AttachAsChild(Handle, host, bounds.X, bounds.Y, bounds.Width, bounds.Height);
-            if (!Attached)
-            {
-                // Explorer refused the wallpaper layer: fall back to a normal
-                // desktop-level window so the user still sees their video.
-                Attached = false;
-                TopMost = false;
-                Bounds = bounds;
-            }
+            HostKind = WallpaperAttach.Place(Handle, false);
+            Attached = HostKind == "WorkerW" || HostKind == "Progman";
+            Trace2.Write("wall: placed host=" + HostKind + " hwnd=" + Handle.ToString("X"));
         }
 
         public void DetachFromDesktop()
         {
-            if (DesktopHost.WindowAlive(Handle))
-            {
-                DesktopHost.DetachToDesktop(Handle);
-            }
+            if (!WallpaperAttach.WindowAlive(Handle)) { return; }
+            DesktopHost.DetachToDesktop(Handle);
         }
 
         public void UpdateBoundsToDesktop()
         {
-            if (!DesktopHost.WindowAlive(Handle)) { return; }
-            Rectangle bounds = DesktopHost.VirtualDesktop();
-            DesktopHost.Reposition(Handle, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            if (!WallpaperAttach.WindowAlive(Handle)) { return; }
+            WallpaperAttach.RECT r = WallpaperAttach.VirtualScreen();
+            DesktopHost.Reposition(Handle, r.Left, r.Top, r.Width, r.Height);
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
