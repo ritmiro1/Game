@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   windows:
@@ -21,13 +22,17 @@ jobs:
 
       - name: Build
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $out = dotnet build app/VidDesk/VidDesk.csproj -c Release -v minimal 2>&1 | Out-String
           Write-Host $out
-          "### build output`n``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          $out | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          if ($LASTEXITCODE -ne 0) { throw "dotnet build failed" }
+          if ($LASTEXITCODE -ne 0) {
+            $body = "Build failed (run $env:GITHUB_RUN_ID):`n`n~~~`n" + $out.Substring(0, [Math]::Min(60000, $out.Length)) + "`n~~~"
+            $body | Out-File -Encoding utf8 build-log.md
+            gh pr comment 1 --body-file build-log.md
+            throw "dotnet build failed"
+          }
 
       - name: Fetch media runtime
         shell: pwsh
