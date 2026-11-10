@@ -12,17 +12,17 @@ namespace VidDesk.Ui
         private readonly ListView _library;
         private readonly Panel _previewHost;
         private readonly Label _previewHint;
-        private readonly Label _titleLabel;
-        private readonly Label _pathLabel;
-        private readonly Slider _volume;
-        private readonly Label _volumeValue;
-        private readonly Slider _speed;
-        private readonly Label _speedValue;
-        private readonly ComboBox _fit;
-        private readonly ComboBox _eq;
-        private readonly CheckBox _muted;
-        private readonly CheckBox _playlist;
-        private readonly CheckBox _silent;
+        private Label _titleLabel;
+        private Label _pathLabel;
+        private Slider _volume;
+        private Label _volumeValue;
+        private Slider _speed;
+        private Label _speedValue;
+        private ComboBox _fit;
+        private ComboBox _eq;
+        private CheckBox _muted;
+        private CheckBox _playlist;
+        private CheckBox _silent;
         private readonly Label _status;
 
         private readonly Dictionary<string, Bitmap> _thumbs = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
@@ -312,9 +312,7 @@ namespace VidDesk.Ui
                         if (IsDisposed) { return; }
                         if (_thumbs.ContainsKey(key)) { _thumbs[key].Dispose(); }
                         _thumbs[key] = bmp;
-                        int idx = _tiles.Images.IndexOfKey(key);
-                        if (idx >= 0) { _tiles.Images.Images[idx] = bmp; }
-                        else { _tiles.Images.Add(key, bmp); }
+                        if (!_tiles.Images.ContainsKey(key)) { _tiles.Images.Add(key, bmp); }
                         _library.Invalidate();
                     }));
                 }
