@@ -203,7 +203,11 @@ namespace Lumen.Native
             get
             {
                 if (_player == IntPtr.Zero) { return null; }
-                try { return VlcApi.libvlc_errmsg(); }
+                try
+                {
+                    IntPtr ptr = VlcApi.libvlc_errmsg();
+                    return ptr == IntPtr.Zero ? null : Marshal.PtrToStringAnsi(ptr);
+                }
                 catch { return null; }
             }
         }

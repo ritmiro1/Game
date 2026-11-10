@@ -122,6 +122,9 @@ namespace Lumen.Native
         internal static extern IntPtr libvlc_errmsg();
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern IntPtr libvlc_printerr([MarshalAs(UnmanagedType.LPUTF8Str)] string message);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern int libvlc_media_player_set_rate(IntPtr player, float rate);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
