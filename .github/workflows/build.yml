@@ -1,0 +1,176 @@
+name: build
+
+on:
+  push:
+    branches: [arena/01c96a79-game, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $out = dotnet build app/Lumen/Lumen.csproj -c Release -v minimal 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            try {
+              $body = "Build failed (run $env:GITHUB_RUN_ID):`n`n~~~`n" + $out.Substring(0, [Math]::Min(60000, $out.Length)) + "`n~~~"
+              $body | Out-File -Encoding utf8 build-log.md
+              gh pr comment 1 --body-file build-log.md
+            } catch { Write-Host "could not post log: $_" }
+            throw "dotnet build failed"
+          }
+
+      - name: Resolve C# compiler
+        shell: pwsh
+        run: |
+          $csc = Get-ChildItem "$env:ProgramFiles\dotnet\sdk" -Recurse -Filter csc.dll -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -match 'Roslyn\\bincore' } | Select-Object -First 1
+          if (-not $csc) { throw "csc.dll not found" }
+          Write-Host "csc: $($csc.FullName)"
+          "CSC_DLL=$($csc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Fetch media runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = "app/Lumen/bin/Release/net48/libvlc"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $ok = $false
+          $urls = @("https://download.videolan.org/pub/videolan/vlc/3.0.20/win64/vlc-3.0.20-win64.zip")
+          foreach ($url in $urls) {
+            try {
+              Write-Host "downloading $url"
+              Invoke-WebRequest -Uri $url -OutFile vlc.zip -TimeoutSec 600
+              Expand-Archive vlc.zip -DestinationPath vlc -Force
+              $root = Get-ChildItem vlc -Directory | Select-Object -First 1
+              Copy-Item "$($root.FullName)/*" $out -Recurse -Force
+              Copy-Item "$($root.FullName)/ffmpeg.exe" "app/Lumen/bin/Release/net48/ffmpeg.exe" -Force -ErrorAction SilentlyContinue
+              $ok = $true
+            } catch { Write-Host "failed: $_" }
+          }
+          if (-not $ok) {
+            Write-Host "falling back to chocolatey vlc"
+            choco install vlc --no-progress -y
+            $src = "C:/Program Files/VideoLAN/VLC"
+            Copy-Item "$src/*" $out -Recurse -Force
+            Copy-Item "$src/ffmpeg.exe" "app/Lumen/bin/Release/net48/ffmpeg.exe" -Force -ErrorAction SilentlyContinue
+          }
+          if (-not (Test-Path "$out/libvlc.dll")) { throw "libvlc.dll missing" }
+          $raw = Get-ChildItem $out | Measure-Object -Property Length -Sum
+          Write-Host ("runtime payload: {0:N1} MB in {1} items" -f ($raw.Sum/1MB), (Get-ChildItem $out -Recurse -File).Count)
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $stage = "stage/Lumen"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "app/Lumen/bin/Release/net48/Lumen.exe" $stage
+          Copy-Item "app/Lumen/bin/Release/net48/libvlc" "$stage/libvlc" -Recurse -Force
+          if (Test-Path "app/Lumen/bin/Release/net48/ffmpeg.exe") {
+            Copy-Item "app/Lumen/bin/Release/net48/ffmpeg.exe" $stage
+          }
+          Copy-Item README.md $stage
+          Write-Host "portable folder staged for reference"
+
+
+      - name: Embed runtime into single EXE
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = "app/Lumen/bin/Release/net48"
+          # 1. bundle the media runtime
+          $runtimeDir = Join-Path $build "libvlc"
+          Compress-Archive -Path "$runtimeDir/*" -DestinationPath "$build/Lumen.rt.zip" -CompressionLevel Optimal -Force
+          Get-ChildItem "$build/Lumen.rt.zip" | Format-List Name, Length
+
+          # 2. recompile with the archive embedded as a managed resource
+          $sources = Get-ChildItem -Path "app/Lumen" -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch '\\obj\\|\\bin\\' } | ForEach-Object { $_.FullName }
+          $refs = @()
+          $framework = "C:/Windows/Microsoft.NET/Framework64/v4.0.30319"
+          $refs += "$framework/mscorlib.dll"
+          $refs += "$framework/System.dll"
+          $refs += "$framework/System.Core.dll"
+          $refs += "$framework/System.Drawing.dll"
+          $refs += "$framework/System.Windows.Forms.dll"
+          $refs += "$framework/System.Runtime.Serialization.dll"
+          $refs += "$framework/System.Xml.dll"
+          $refs += "$framework/Microsoft.CSharp.dll"
+          $refs += "$framework/System.Configuration.dll"
+          $refs += "$framework/System.IO.Compression.dll"
+          $refs += "$framework/System.IO.Compression.FileSystem.dll"
+          $refArgs = $refs | ForEach-Object { "/reference:$($_)" }
+          $resArg = "/resource:$build/Lumen.rt.zip,Lumen.runtime.zip"
+          $iconArg = "/win32icon:app/Lumen/app.ico"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $cscOut = & dotnet $env:CSC_DLL /nologo /target:winexe /platform:anycpu /optimize+ /debug- /out:dist/Lumen.exe $resArg $iconArg $refArgs $sources 2>&1 | Out-String
+          Write-Host $cscOut
+          if ($LASTEXITCODE -ne 0) {
+            try {
+              ("Single-file step failed (run $env:GITHUB_RUN_ID):`n`n~~~`n" + $cscOut.Substring(0, [Math]::Min(60000, $cscOut.Length)) + "`n~~~") | Out-File -Encoding utf8 step-log.md
+              gh pr comment 1 --body-file step-log.md
+            } catch { Write-Host "could not post: $_" }
+            throw "csc failed"
+          }
+          Get-ChildItem dist | Format-List Name, Length
+          if (-not (Test-Path "dist/Lumen.exe")) { throw "single-file build missing" }
+
+      - name: Verify single-file payload
+        shell: pwsh
+        run: |
+          $exe = Get-Item "dist/Lumen.exe"
+          Write-Host ("Lumen.exe = {0:N1} MB" -f ($exe.Length / 1MB))
+          if ($exe.Length -lt 20MB) { throw "runtime resource missing, exe too small" }
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/arena/01c96a79-game'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $appInfo = Get-Content "app/Lumen/AppInfo.cs" -Raw
+          $ver = [regex]::Match($appInfo, 'Version = "([0-9.]+)"').Groups[1].Value
+          $tag = "v$ver"
+          Write-Host "tag: $tag"
+          $hash = (Get-FileHash dist/Lumen.exe -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item dist/Lumen.exe).Length
+          $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm") + " UTC"
+          "Lumen $ver single-file build" | Out-File -Encoding utf8 notes.md
+          "" | Out-File -Encoding utf8 -Append notes.md
+          "- build: $stamp (run $env:GITHUB_RUN_NUMBER)" | Out-File -Encoding utf8 -Append notes.md
+          "- sha256: ``$hash``" | Out-File -Encoding utf8 -Append notes.md
+          "- size: $([math]::Round($size/1MB,1)) MB" | Out-File -Encoding utf8 -Append notes.md
+          "" | Out-File -Encoding utf8 -Append notes.md
+          "Download Lumen.exe and run it. The media engine (LibVLC) is embedded and is unpacked to %LOCALAPPDATA%\Lumen\rt on first start." | Out-File -Encoding utf8 -Append notes.md
+          "If something does not start: run ``Lumen.exe --selftest`` and send the report." | Out-File -Encoding utf8 -Append notes.md
+          $hash | Out-File -Encoding ascii dist/SHA256.txt
+          gh release view $tag > $null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "Lumen $ver" --notes-file notes.md --latest
+          } else {
+            gh release edit $tag --notes-file notes.md
+          }
+          gh release upload $tag dist/Lumen.exe dist/SHA256.txt --clobber
+          Write-Host "uploaded $tag sha256=$hash size=$size"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lumen
+          path: dist/Lumen.exe

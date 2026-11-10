@@ -1,0 +1,279 @@
+using System;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.IO.Compression;
+using System.Reflection;
+using System.Threading;
+using System.Windows.Forms;
+
+namespace Lumen
+{
+    /// <summary>
+    /// Unpacks the media runtime that ships inside the executable and wires DLL search
+    /// paths. Keeps Lumen a single portable EXE: no loose files next to it.
+    /// </summary>
+    internal static class RuntimeBootstrap
+    {
+        private const string ResourceName = "Lumen.runtime.zip";
+        private const string MarkerName = "runtime.stamp";
+
+        private static string _runtimeDir;
+
+        /// <summary>
+        /// Neutral location for the unpacked engine: no product name in the path, no
+        /// spaces, always writable. Chosen so that neither Explorer nor security tools
+        /// associate the folder with the application itself.
+        /// </summary>
+        public static string RuntimeDir
+        {
+            get
+            {
+                if (_runtimeDir != null) { return _runtimeDir; }
+                string[] candidates =
+                {
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Lumen", "rt"),
+                    Path.Combine(Path.GetTempPath(), "Lumen", "rt"),
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "rt")
+                };
+                foreach (string dir in candidates)
+                {
+                    if (IsWritable(dir))
+                    {
+                        _runtimeDir = dir;
+                        return dir;
+                    }
+                }
+                _runtimeDir = Path.Combine(Path.GetTempPath(), "Lumen", "rt");
+                return _runtimeDir;
+            }
+        }
+
+        /// <summary>
+        /// Removes folders left behind by earlier builds of this app so that stale
+        /// engine binaries can never be picked up.
+        /// </summary>
+        public static void CleanLegacyRuntime()
+        {
+            string[] stale =
+            {
+                // Folders left by earlier builds: purged so stale engine DLLs are never used.
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "vlcrt"),
+                Path.Combine(Path.GetTempPath(), "vlcrt"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Lumen", "runtime"),
+                Path.Combine(Path.GetTempPath(), "Lumen", "runtime")
+            };
+            foreach (string dir in stale)
+            {
+                try
+                {
+                    if (Directory.Exists(dir)) { Directory.Delete(dir, true); }
+                }
+                catch { }
+            }
+        }
+
+        private static bool IsWritable(string dir)
+        {
+            try
+            {
+                Directory.CreateDirectory(dir);
+                string probe = Path.Combine(dir, ".w");
+                File.WriteAllText(probe, "1");
+                File.Delete(probe);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static bool HasEmbeddedRuntime
+        {
+            get
+            {
+                Assembly asm = Assembly.GetExecutingAssembly();
+                foreach (string name in asm.GetManifestResourceNames())
+                {
+                    if (name == ResourceName) { return true; }
+                }
+                return false;
+            }
+        }
+
+        /// <summary>Returns the folder that contains libvlc.dll, or null when none is available.</summary>
+        public static string EnsureRuntime(IProgress progress)
+        {
+            string external = FindExternalRuntime();
+            if (external != null) { return external; }
+
+            if (!HasEmbeddedRuntime)
+            {
+                return null;
+            }
+
+            string dir = RuntimeDir;
+            string marker = Path.Combine(dir, MarkerName);
+            string stamp = Stamp();
+            Trace2.Write("runtime: target " + dir);
+
+            if (File.Exists(Path.Combine(dir, "libvlc.dll")) && File.Exists(marker)
+                && File.ReadAllText(marker).Trim() == stamp)
+            {
+                Trace2.Write("runtime: already unpacked");
+                return dir;
+            }
+
+            try
+            {
+                if (Directory.Exists(dir)) { Directory.Delete(dir, true); }
+            }
+            catch { }
+
+            Directory.CreateDirectory(dir);
+            if (progress != null) { progress.Report("Распаковка медиадвижка…"); }
+
+            string tempZip = Path.Combine(Path.GetTempPath(), "lumen_rt_" + Guid.NewGuid().ToString("N") + ".zip");
+            using (Stream src = Assembly.GetExecutingAssembly().GetManifestResourceStream(ResourceName))
+            {
+                if (src == null) { return null; }
+                using (FileStream dst = File.Create(tempZip)) { src.CopyTo(dst, 81920); }
+            }
+
+            if (progress != null) { progress.Report("Распаковка медиадвижка… 50 %"); }
+            Trace2.Write("runtime: extracting to " + dir);
+            try
+            {
+                ZipFile.ExtractToDirectory(tempZip, dir);
+                Trace2.Write("runtime: extracted");
+            }
+            finally
+            {
+                try { File.Delete(tempZip); } catch { }
+            }
+
+            if (!File.Exists(Path.Combine(dir, "libvlc.dll")))
+            {
+                // The archive may keep everything under a single folder.
+                string[] dirs = Directory.GetDirectories(dir);
+                if (dirs.Length == 1 && File.Exists(Path.Combine(dirs[0], "libvlc.dll")))
+                {
+                    foreach (string f in Directory.GetFiles(dirs[0]))
+                    {
+                        File.Copy(f, Path.Combine(dir, Path.GetFileName(f)), true);
+                    }
+                    foreach (string d in Directory.GetDirectories(dirs[0]))
+                    {
+                        string target = Path.Combine(dir, Path.GetFileName(d));
+                        if (!Directory.Exists(target)) { Directory.Move(d, target); }
+                    }
+                }
+            }
+
+            File.WriteAllText(marker, stamp);
+            return dir;
+        }
+
+        private static string Stamp()
+        {
+            try { return Assembly.GetExecutingAssembly().GetName().Version.ToString(); }
+            catch { return "1"; }
+        }
+
+        private static string FindExternalRuntime()
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string[] candidates =
+            {
+                Path.Combine(baseDir, "libvlc"),
+                Path.Combine(baseDir, "libvlc", "win-x64"),
+                Path.Combine(baseDir, "libvlc", "win-x86"),
+                baseDir
+            };
+            foreach (string dir in candidates)
+            {
+                if (File.Exists(Path.Combine(dir, "libvlc.dll"))) { return dir; }
+            }
+            return null;
+        }
+
+        /// <summary>Prepares the process so that plain [DllImport("libvlc")] resolves.</summary>
+        public static void RegisterNativeSearchPath(string dir)
+        {
+            if (string.IsNullOrEmpty(dir)) { return; }
+            try { Native.VlcApi.SetDllDirectory(dir); } catch { }
+
+            string path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            if (path.IndexOf(dir, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                Environment.SetEnvironmentVariable("PATH", dir + ";" + path);
+            }
+
+            string plugins = Path.Combine(dir, "plugins");
+            if (Directory.Exists(plugins))
+            {
+                Environment.SetEnvironmentVariable("VLC_PLUGIN_PATH", plugins);
+            }
+            Environment.SetEnvironmentVariable("LUMEN_RUNTIME", dir);
+        }
+
+        public interface IProgress
+        {
+            void Report(string text);
+        }
+    }
+
+    /// <summary>Minimal splash shown while the runtime is unpacked for the first time.</summary>
+    internal sealed class Splash : Form, RuntimeBootstrap.IProgress
+    {
+        private readonly Label _text;
+
+        public Splash()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            BackColor = Ui.Pal.Panel;
+            Size = new Size(420, 132);
+            ShowInTaskbar = true;
+            TopMost = true;
+
+            Label title = new Label
+            {
+                Text = "LUMEN",
+                Font = new Font("Segoe UI Semibold", 16f),
+                ForeColor = Ui.Pal.Text,
+                AutoSize = true,
+                Location = new Point(24, 22)
+            };
+            Controls.Add(title);
+
+            _text = new Label
+            {
+                Text = "Подготовка к запуску…",
+                Font = Ui.Pal.Base,
+                ForeColor = Ui.Pal.Dim,
+                AutoSize = false,
+                Location = new Point(26, 66),
+                Size = new Size(370, 40)
+            };
+            Controls.Add(_text);
+
+            Paint += (s, e) =>
+            {
+                using (var pen = new Pen(Ui.Pal.Accent, 3f))
+                {
+                    e.Graphics.DrawLine(pen, 0, Height - 2, Width, Height - 2);
+                }
+            };
+        }
+
+        public void Report(string text)
+        {
+            if (InvokeRequired)
+            {
+                try { BeginInvoke((Action)(() => _text.Text = text)); } catch { }
+                return;
+            }
+            _text.Text = text;
+            Refresh();
+        }
+    }
+}
