@@ -22,7 +22,7 @@ jobs:
     env:
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "2"
-      OUTPUT_DIR: ${{ runner.temp }}/portrait-16k
+      OUTPUT_DIR: /tmp/portrait-16k
       RELEASE_TAG: video-16k-20261110-cc989019
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +67,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
           path: |
-            ${{ runner.temp }}/portrait-16k/validation-16k.json
-            ${{ runner.temp }}/portrait-16k/decoder.log
-            ${{ runner.temp }}/portrait-16k/encoder.log
-            ${{ runner.temp }}/portrait-16k/encoding-progress.txt
+            ${{ env.OUTPUT_DIR }}/validation-16k.json
+            ${{ env.OUTPUT_DIR }}/decoder.log
+            ${{ env.OUTPUT_DIR }}/encoder.log
+            ${{ env.OUTPUT_DIR }}/encoding-progress.txt
