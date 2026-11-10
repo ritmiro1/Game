@@ -33,6 +33,7 @@
 #include <vector>
 #include "resampler.h"
 #include "video_edit.h"
+#include "slider_math.h"
 
 #ifndef WS_EX_NOREDIRECTIONBITMAP
 #define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
@@ -127,10 +128,10 @@ static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0}, p_speed{100};
 static std::atomic<bool> p_mute{false};
 static VideoEdit p_edit; // guarded by g_cs
 static std::atomic<HWND> g_previewWindow{nullptr};
-static std::atomic<bool> g_previewMessage{false}, g_freezePreviewRequest{false};
+static std::atomic<bool> g_previewMessage{false}, g_previewFrozen{true}, g_previewRefresh{false};
 static std::vector<BYTE> g_previewPixels; // guarded by g_cs
 static int g_previewWidth = 0, g_previewHeight = 0;
-static bool g_editorRestorePlayback = false; // UI thread only
+static unsigned long long g_previewGeneration = 0;
 static HANDLE p_thread = nullptr;
 static std::wstring p_path;
 // UI requests are deferred until the old player thread has actually exited.
@@ -857,7 +858,12 @@ struct Player {
             }
         }
         buf->Release();
-        rawFrame.assign(bits, bits + (size_t)dw * dh * 4);
+        VideoEdit current;
+        EnterCriticalSection(&g_cs); current = p_edit; LeaveCriticalSection(&g_cs);
+        bool previewNeedsFrame = g_previewWindow.load() && (!g_previewFrozen.load() || g_previewRefresh.load());
+        if (previewNeedsFrame || HasColorAdjustments(current) || current.flipX || current.flipY)
+            rawFrame.assign(bits, bits + (size_t)dw * dh * 4);
+        else rawFrame.clear();
         frameProcessed = false;
         haveFrame = true;
     }
@@ -869,7 +875,8 @@ struct Player {
     }
     void CapturePreview(bool force, const RECT& visible) {
         HWND target = g_previewWindow.load();
-        if (!target || (!force && NowSec() - previewAt < 0.05)) return;
+        bool refresh = g_previewRefresh.load();
+        if (!target || (g_previewFrozen.load() && !refresh) || (!force && !refresh && NowSec() - previewAt < 1.0 / 30.0)) return;
         int aw = visible.right - visible.left, ah = visible.bottom - visible.top;
         if (aw <= 0 || ah <= 0) return;
         double scale = std::min(1.0, 640.0 / std::max(aw, ah));
@@ -890,13 +897,18 @@ struct Player {
         }
         SetStretchBltMode(previewDC, HALFTONE);
         SetBrushOrgEx(previewDC, 0, 0, nullptr);
-        if (!StretchBlt(previewDC, 0, 0, previewW, previewH, mem, visible.left, visible.top, aw, ah, SRCCOPY)) return;
+        BITMAPINFO source = {}; source.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        source.bmiHeader.biWidth = (LONG)dw; source.bmiHeader.biHeight = -(LONG)dh;
+        source.bmiHeader.biPlanes = 1; source.bmiHeader.biBitCount = 32; source.bmiHeader.biCompression = BI_RGB;
+        if (rawFrame.empty() || StretchDIBits(previewDC, 0, 0, previewW, previewH,
+                visible.left, visible.top, aw, ah, rawFrame.data(), &source, DIB_RGB_COLORS, SRCCOPY) == (int)GDI_ERROR) return;
         GdiFlush();
         EnterCriticalSection(&g_cs);
         if (g_previewWindow.load() != target) { LeaveCriticalSection(&g_cs); return; }
         g_previewPixels.assign(previewBits, previewBits + (size_t)previewW * previewH * 4);
         g_previewWidth = previewW; g_previewHeight = previewH;
-        if (g_freezePreviewRequest.exchange(false)) p_userPause = true;
+        ++g_previewGeneration;
+        g_previewRefresh = false;
         LeaveCriticalSection(&g_cs);
         previewAt = NowSec();
         if (!g_previewMessage.exchange(true)) {
@@ -905,18 +917,26 @@ struct Player {
     }
     void Draw(bool forcePreview = false) {
         if (!haveFrame || !mem) return;
+        // If editing starts while a neutral frame is paused, retain it on demand.
+        if (g_previewWindow.load() && (!g_previewFrozen.load() || g_previewRefresh.load()) && rawFrame.empty()) {
+            GdiFlush(); rawFrame.assign(bits, bits + (size_t)dw * dh * 4);
+        }
+        CapturePreview(forcePreview, vis); // raw source; editor applies its draft at preview size
         VideoEdit e;
         EnterCriticalSection(&g_cs); e = p_edit; LeaveCriticalSection(&g_cs);
         if (!frameProcessed || !SameColorAdjustments(e, appliedColor)) {
             bool hadColor = frameProcessed && (HasColorAdjustments(appliedColor) || appliedColor.flipX || appliedColor.flipY);
-            GdiFlush();
-            if (hadColor && rawFrame.size() == (size_t)dw * dh * 4) memcpy(bits, rawFrame.data(), rawFrame.size());
-            FlipImage(bits, (int)dw, (int)dh, e.flipX, e.flipY);
-            AdjustColors(bits, (size_t)dw * dh, e);
+            bool needsColor = HasColorAdjustments(e) || e.flipX || e.flipY;
+            if (hadColor || needsColor) {
+                GdiFlush();
+                if (needsColor && !hadColor && rawFrame.empty()) rawFrame.assign(bits, bits + (size_t)dw * dh * 4);
+                if (hadColor && rawFrame.size() == (size_t)dw * dh * 4) memcpy(bits, rawFrame.data(), rawFrame.size());
+                FlipImage(bits, (int)dw, (int)dh, e.flipX, e.flipY);
+                AdjustColors(bits, (size_t)dw * dh, e);
+            }
             appliedColor = e; frameProcessed = true;
         }
         RECT visible = VisibleForEdit(e);
-        CapturePreview(forcePreview, visible);
         HWND w = g_wall.load();
         if (!w) return;
         HDC dc = GetDC(w);
@@ -1063,6 +1083,8 @@ struct Player {
         bool clockSet = false, vEos = false, aEos = !hasAudio, wasPaused = false;
         double speed = p_speed.load() / 100.0;
         int framesThisPass = 0, skipped = 0, result = R_QUIT;
+        int statDecoded = 0, statDrawn = 0, statDropped = 0;
+        double statStart = NowSec(), statDecodeMs = 0, statDrawMs = 0, statDrawMax = 0;
         bool failed = false;
         hr = S_OK;
 
@@ -1094,7 +1116,9 @@ struct Player {
                 DWORD idx = 0, flags = 0;
                 LONGLONG ts = 0;
                 IMFSample* s = nullptr;
+                double decodeStart = NowSec();
                 hr = rd->ReadSample(SR_VIDEO, 0, &idx, &flags, &ts, &s);
+                statDecodeMs += (NowSec() - decodeStart) * 1000.0; ++statDecoded;
                 if (FAILED(hr) || (flags & MF_SOURCE_READERF_ERROR)) {
                     if (s) s->Release();
                     failed = true;
@@ -1128,7 +1152,7 @@ struct Player {
             }
             speed = nextSpeed;
             double now = (wall - base) * speed;
-            if (vS && now - vPts > 0.5) {
+            if (vS && now - vPts > 0.5 * speed) {
                 // far behind (PC woke from sleep, long stall): continue from this frame instead of racing to catch up
                 base = NowSec() - vPts / speed;
                 now = vPts;
@@ -1140,6 +1164,8 @@ struct Player {
             if (hasAudio && clockSet) {
                 int guard = 0;
                 while (!aEos && aUntil - now < LEAD * speed && guard++ < 96) {
+                    now = (NowSec() - base) * speed;
+                    if (aUntil - now >= LEAD * speed) break;
                     if (!aS) {
                         DWORD idx = 0, flags = 0;
                         LONGLONG ts = 0;
@@ -1155,6 +1181,7 @@ struct Player {
                         aS = s;
                         aPts = (double)ts / 1e7;
                     }
+                    now = (NowSec() - base) * speed;
                     double playAt = std::max(now, aUntil);
                     if (aPts - playAt > 0.03) break;  // not due yet
                     if (playAt - aPts > 0.5) {        // severe desynchronisation only; avoid chopping short packets
@@ -1169,15 +1196,28 @@ struct Player {
                 }
             }
 
+            // Decode and audio processing take time; do not schedule against a stale clock.
+            now = (NowSec() - base) * speed;
             // 3) show the frame when its time comes
             if (vS) {
                 double d = vPts - now;
                 if (d <= 0.001) {
-                    bool late = d < -0.12;
+                    bool late = d / speed < -0.12;
                     if (!late || ++skipped > 4) {
+                        double start = NowSec();
                         CopyFrame(vS);
                         Draw();
+                        double ms = (NowSec() - start) * 1000.0;
+                        statDrawMs += ms; statDrawMax = std::max(statDrawMax, ms); ++statDrawn;
                         skipped = 0;
+                    } else ++statDropped;
+                    if (NowSec() - statStart >= 10.0 && statDecoded > 0) {
+                        if (statDropped > 0 || statDrawMax > 25.0 || statDecodeMs / statDecoded > 20.0)
+                            Log(L"perf: video reads=%d avg=%.1fms draws=%d avg=%.1fms max=%.1fms dropped=%d speed=%d%%",
+                                statDecoded, statDecodeMs/statDecoded, statDrawn, statDrawn ? statDrawMs/statDrawn : 0.0,
+                                statDrawMax, statDropped, p_speed.load());
+                        statStart = NowSec(); statDecoded = statDrawn = statDropped = 0;
+                        statDecodeMs = statDrawMs = statDrawMax = 0;
                     }
                     if (vPts > lastV && vPts - lastV < 0.5) frameDur = vPts - lastV;
                     lastV = vPts;
@@ -1186,7 +1226,7 @@ struct Player {
                     vS->Release();
                     vS = nullptr;
                 } else {
-                    Sleep(d / speed > 0.012 ? 8 : 1);
+                    Sleep(d / speed > 0.008 ? 3 : 1);
                 }
             } else if (vEos && aEos) {
                 double endT = std::max(lastV + frameDur, hasAudio ? aUntil : 0.0);
@@ -1568,8 +1608,12 @@ static HDC g_previewPaintDC = nullptr;
 static HBITMAP g_previewPaintBitmap = nullptr;
 static HGDIOBJ g_previewPaintOld = nullptr;
 static int g_previewPaintW = 0, g_previewPaintH = 0;
+static std::vector<BYTE> g_previewDisplay;
+static unsigned long long g_displayGeneration = 0;
+static int g_displayWidth = 0, g_displayHeight = 0;
+static VideoEdit g_displayEdit;
 static std::wstring g_editorPath;
-static VideoEdit g_editOriginal, g_editDraft;
+static VideoEdit g_editDraft;
 static RECT g_previewImage = {};
 static int g_cropDrag = 0, g_cropLast = 16;
 static POINT g_cropAnchor = {};
@@ -1579,11 +1623,11 @@ enum { ED_BRIGHT = 101, ED_CONTRAST, ED_SAT, ED_GAMMA, ED_WARMTH, ED_HUE,
        ED_FLIP_X, ED_FLIP_Y, ED_PAUSE, ED_INVERT, ED_THEME };
 static const wchar_t* EDITOR_CLASS = L"LoopDeskEditor";
 static const wchar_t* PREVIEW_CLASS = L"LoopDeskPreview";
+static const wchar_t* SLIDER_CLASS = L"LoopDeskEditorSlider";
 
 static void PublishEdit() {
     NormalizeEdit(g_editDraft);
-    EnterCriticalSection(&g_cs); p_edit = g_editDraft; LeaveCriticalSection(&g_cs);
-    p_repaint = true;
+    // Preview draft at reduced resolution. The wallpaper is updated only on Apply.
     if (g_edPreview) InvalidateRect(g_edPreview, nullptr, FALSE);
 }
 static void SetEditorLabels() {
@@ -1592,30 +1636,32 @@ static void SetEditorLabels() {
                     g_editDraft.gamma, g_editDraft.warmth, g_editDraft.hue};
     for (int i = 0; i < 6; ++i) {
         wchar_t text[96]; _snwprintf(text, 95, L"%ls: %d", names[i], values[i]); text[95] = 0;
-        if (g_edLabels[i]) SetWindowTextW(g_edLabels[i], text);
+        if (g_edLabels[i]) {
+            wchar_t old[96]; GetWindowTextW(g_edLabels[i], old, 96);
+            if (lstrcmpW(old, text)) SetWindowTextW(g_edLabels[i], text);
+        }
         int pos = i == 0 || i == 4 ? values[i] + 100 : i == 5 ? values[i] + 180 : values[i];
         if (g_edTracks[i]) SendMessageW(g_edTracks[i], TBM_SETPOS, TRUE, pos);
     }
-    for (HWND h : g_edMirror) if (h) InvalidateRect(h, nullptr, FALSE);
 }
 static void CloseEditor(bool apply) {
     if (!g_editor) return;
     int idx = FindItem(g_editorPath);
-    if (apply && idx >= 0) { g_items[(size_t)idx].edit = g_editDraft; SaveConfig(); }
-    if (!apply) g_editDraft = g_editOriginal;
-    if (idx >= 0 && idx == g_active) PublishEdit();
+    if (apply && idx >= 0) {
+        g_items[(size_t)idx].edit = g_editDraft; SaveConfig();
+        if (idx == g_active) {
+            EnterCriticalSection(&g_cs); p_edit = g_editDraft; LeaveCriticalSection(&g_cs);
+            p_repaint = true;
+        }
+    }
     EnterCriticalSection(&g_cs);
-    g_previewWindow = nullptr; g_freezePreviewRequest = false;
-    if (g_editorRestorePlayback) p_userPause = false;
-    g_editorRestorePlayback = false;
+    g_previewWindow = nullptr; g_previewRefresh = false;
+    g_previewPixels.clear(); g_previewWidth = 0; g_previewHeight = 0; ++g_previewGeneration;
     LeaveCriticalSection(&g_cs);
-    HWND h = g_editor;
-    g_editor = nullptr; g_edPreview = nullptr;
+    HWND h = g_editor; g_editor = nullptr; g_edPreview = nullptr;
     DestroyWindow(h);
     g_previewMessage = false;
-    EnterCriticalSection(&g_cs);
-    g_previewPixels.clear(); g_previewWidth = 0; g_previewHeight = 0;
-    LeaveCriticalSection(&g_cs);
+    g_previewDisplay.clear(); g_displayWidth = g_displayHeight = 0; g_displayGeneration = 0;
     InvalidateRect(g_main, nullptr, FALSE);
 }
 static RECT PreviewImageRect(HWND h, int vw, int vh) {
@@ -1637,16 +1683,7 @@ static LRESULT CALLBACK PreviewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_ERASEBKGND: return 1;
     case WM_APP_PREVIEW:
-        g_previewMessage = false;
-        if (g_edButtons[7]) {
-            const wchar_t* wanted = p_userPause.load() ? L"Продолжить видео" : L"Пауза видео";
-            wchar_t current[64]; GetWindowTextW(g_edButtons[7], current, 64);
-            if (lstrcmpW(current, wanted)) {
-                SetWindowTextW(g_edButtons[7], wanted); InvalidateRect(g_edButtons[7], nullptr, FALSE);
-                InvalidateRect(g_main, nullptr, FALSE);
-            }
-        }
-        InvalidateRect(h, nullptr, FALSE); return 0;
+        g_previewMessage = false; InvalidateRect(h, nullptr, FALSE); return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps; HDC screen = BeginPaint(h, &ps);
         RECT client; GetClientRect(h, &client);
@@ -1661,19 +1698,32 @@ static LRESULT CALLBACK PreviewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         HDC dc = g_previewPaintBitmap ? g_previewPaintDC : screen;
         FillRect(dc, &client, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        bool changed = false;
         EnterCriticalSection(&g_cs);
-        int w = g_previewWidth, ht = g_previewHeight;
+        if (g_previewGeneration != g_displayGeneration || !SameColorAdjustments(g_displayEdit, g_editDraft)) {
+            LeaveCriticalSection(&g_cs);
+            GdiFlush(); // finish any previous use of the preview buffer before modifying it
+            EnterCriticalSection(&g_cs);
+            g_previewDisplay = g_previewPixels;
+            g_displayWidth = g_previewWidth; g_displayHeight = g_previewHeight;
+            g_displayGeneration = g_previewGeneration; g_displayEdit = g_editDraft; changed = true;
+        }
+        LeaveCriticalSection(&g_cs);
+        int w = g_displayWidth, ht = g_displayHeight;
+        if (changed && w > 0 && ht > 0 && g_previewDisplay.size() == (size_t)w * ht * 4) {
+            FlipImage(g_previewDisplay.data(), w, ht, g_editDraft.flipX, g_editDraft.flipY);
+            AdjustColors(g_previewDisplay.data(), (size_t)w * ht, g_editDraft);
+        }
         g_previewImage = PreviewImageRect(h, w, ht);
-        if (w > 0 && ht > 0 && g_previewPixels.size() == (size_t)w * ht * 4) {
+        if (w > 0 && ht > 0 && g_previewDisplay.size() == (size_t)w * ht * 4) {
             BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
             bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -ht; bi.bmiHeader.biPlanes = 1;
             bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
             SetStretchBltMode(dc, HALFTONE);
             SetBrushOrgEx(dc, 0, 0, nullptr);
             StretchDIBits(dc, g_previewImage.left, g_previewImage.top, g_previewImage.right-g_previewImage.left,
-                          g_previewImage.bottom-g_previewImage.top, 0, 0, w, ht, g_previewPixels.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+                          g_previewImage.bottom-g_previewImage.top, 0, 0, w, ht, g_previewDisplay.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
         }
-        LeaveCriticalSection(&g_cs);
         if (w > 0 && ht > 0) {
             RECT c = CropOnPreview();
             // A solid outline avoids the moving hatch pattern that caused visual noise.
@@ -1812,14 +1862,76 @@ static void EditorTitleTheme(HWND h) {
         FreeLibrary(dwm);
     }
 }
-static void EditorSetTrackTheme(HWND w) {
-    HMODULE u = LoadLibraryW(L"uxtheme.dll");
-    if (u) {
-        typedef HRESULT(WINAPI * Fn)(HWND,LPCWSTR,LPCWSTR);
-        Fn fn = (Fn)(void*)GetProcAddress(u,"SetWindowTheme");
-        if (fn) fn(w,L"",L"");
-        FreeLibrary(u);
+// Own slider drawing avoids Windows theme-dependent invisible trackbars.
+struct EditorSlider { int lo=0, hi=100, value=0, page=10; bool drag=false; };
+static LRESULT CALLBACK EditorSliderProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    EditorSlider* data = (EditorSlider*)GetWindowLongPtrW(h, GWLP_USERDATA);
+    if (m == WM_NCCREATE) {
+        data = new EditorSlider(); SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)data);
     }
+    if (!data) return DefWindowProcW(h, m, wp, lp);
+    switch (m) {
+    case TBM_SETRANGE:
+        data->lo = (short)LOWORD(lp); data->hi = (short)HIWORD(lp);
+        if (data->hi <= data->lo) data->hi = data->lo + 1;
+        data->value = std::clamp(data->value, data->lo, data->hi);
+        InvalidateRect(h, nullptr, FALSE); return 0;
+    case TBM_SETPOS: {
+        int v=std::clamp((int)lp, data->lo, data->hi);
+        if (data->value != v) { data->value=v; if (wp) InvalidateRect(h, nullptr, FALSE); }
+        return 0;
+    }
+    case TBM_GETPOS: return data->value;
+    case TBM_SETPAGESIZE: { int old = data->page; data->page = std::max(1, (int)lp); return old; }
+    case WM_GETDLGCODE: return DLGC_WANTARROWS;
+    case WM_ERASEBKGND: return 1;
+    case WM_SETFOCUS: case WM_KILLFOCUS: InvalidateRect(h, nullptr, FALSE); return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC screen=BeginPaint(h, &ps); RECT r; GetClientRect(h, &r);
+        HDC mem=CreateCompatibleDC(screen); HBITMAP bitmap=mem ? CreateCompatibleBitmap(screen, std::max(1L,r.right), std::max(1L,r.bottom)) : nullptr;
+        HGDIOBJ old=bitmap ? SelectObject(mem, bitmap) : nullptr; HDC dc=bitmap ? mem : screen;
+        Fill(dc,r,g_editorDark ? RGB(12,12,12) : GetSysColor(COLOR_BTNFACE));
+        int margin=S(10), left=margin, right=std::max(left+1,(int)r.right-margin), cy=(int)r.bottom/2;
+        int x=left+SliderPixel(data->value,data->lo,data->hi,right-left);
+        RECT track={left,cy-S(3),right,cy+S(3)};
+        Round(dc,track,S(5),g_editorDark ? RGB(112,126,145) : RGB(165,175,190),g_editorDark ? RGB(112,126,145) : RGB(165,175,190));
+        RECT active={left,cy-S(3),x,cy+S(3)}; Fill(dc,active,C_ACC);
+        HGDIOBJ ob=SelectObject(dc,GetStockObject(DC_BRUSH)), op=SelectObject(dc,GetStockObject(DC_PEN));
+        SetDCBrushColor(dc,RGB(255,255,255)); SetDCPenColor(dc,C_ACC);
+        int radius=S(7); Ellipse(dc,x-radius,cy-radius,x+radius+1,cy+radius+1);
+        SelectObject(dc,ob); SelectObject(dc,op);
+        if (GetFocus()==h) { RECT focus=r; InflateRect(&focus,-1,-1); DrawFocusRect(dc,&focus); }
+        if (bitmap) { BitBlt(screen,0,0,r.right,r.bottom,mem,0,0,SRCCOPY); SelectObject(mem,old); DeleteObject(bitmap); }
+        if (mem) DeleteDC(mem); EndPaint(h,&ps); return 0;
+    }
+    case WM_LBUTTONDOWN: SetFocus(h); SetCapture(h); data->drag=true; [[fallthrough]];
+    case WM_MOUSEMOVE:
+        if (data->drag) {
+            RECT r; GetClientRect(h,&r); int left=S(10), right=std::max(left+1,(int)r.right-S(10));
+            int x=std::clamp(GET_X_LPARAM(lp),left,right);
+            int v=SliderValue(x-left,data->lo,data->hi,right-left);
+            if (v != data->value) { data->value=v; InvalidateRect(h,nullptr,FALSE);
+                SendMessageW(GetParent(h),WM_HSCROLL,MAKEWPARAM(TB_THUMBTRACK,v),(LPARAM)h); }
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (data->drag) { data->drag=false; ReleaseCapture(); SendMessageW(GetParent(h),WM_HSCROLL,MAKEWPARAM(TB_ENDTRACK,0),(LPARAM)h); }
+        return 0;
+    case WM_CAPTURECHANGED: data->drag=false; return 0;
+    case WM_KEYDOWN: {
+        int v=data->value;
+        if (wp==VK_LEFT || wp==VK_DOWN) --v; else if (wp==VK_RIGHT || wp==VK_UP) ++v;
+        else if (wp==VK_PRIOR) v+=data->page; else if (wp==VK_NEXT) v-=data->page;
+        else if (wp==VK_HOME) v=data->lo; else if (wp==VK_END) v=data->hi; else break;
+        v=std::clamp(v,data->lo,data->hi);
+        if (v!=data->value) { data->value=v; InvalidateRect(h,nullptr,FALSE);
+            SendMessageW(GetParent(h),WM_HSCROLL,MAKEWPARAM(TB_THUMBPOSITION,v),(LPARAM)h); }
+        return 0;
+    }
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(h,GWLP_USERDATA,0); delete data; return DefWindowProcW(h,m,wp,lp);
+    }
+    return DefWindowProcW(h,m,wp,lp);
 }
 static HWND EditorChild(HWND parent, const wchar_t* cls, const wchar_t* label, DWORD style, int id) {
     HWND w = CreateWindowExW(0, cls, label, WS_CHILD | WS_VISIBLE | style, 0, 0, 1, 1, parent,
@@ -1836,22 +1948,21 @@ static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         EditorTitleTheme(h);
         for (int i=0;i<6;i++) {
             g_edLabels[i] = EditorChild(h, L"STATIC", L"", 0, 210+i);
-            g_edTracks[i] = EditorChild(h, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, ED_BRIGHT+i);
+            g_edTracks[i] = EditorChild(h, SLIDER_CLASS, L"", WS_TABSTOP, ED_BRIGHT+i);
             int low = i == 3 ? 25 : 0, high = i == 3 ? 300 : i == 5 ? 360 : 200;
             SendMessageW(g_edTracks[i], TBM_SETRANGE, TRUE, MAKELONG(low, high));
             SendMessageW(g_edTracks[i], TBM_SETPAGESIZE, 0, 10);
-            EditorSetTrackTheme(g_edTracks[i]);
         }
         g_edMirror[0] = EditorChild(h, L"BUTTON", L"Отразить по горизонтали", WS_TABSTOP | BS_OWNERDRAW, ED_FLIP_X);
         g_edMirror[1] = EditorChild(h, L"BUTTON", L"Отразить по вертикали", WS_TABSTOP | BS_OWNERDRAW, ED_FLIP_Y);
         g_edMirror[2] = EditorChild(h, L"BUTTON", L"Инверсия цветов", WS_TABSTOP | BS_OWNERDRAW, ED_INVERT);
-        const wchar_t* labels[] = {L"Сбросить всё",L"Весь кадр",L"Обрезка 16:9",L"Обрезка 4:3",L"Обрезка 1:1",L"Применить",L"Отмена", p_userPause.load() ? L"Продолжить видео" : L"Пауза видео", g_editorDark ? L"Тема: чёрная" : L"Тема: светлая"};
+        const wchar_t* labels[] = {L"Сбросить всё",L"Весь кадр",L"Обрезка 16:9",L"Обрезка 4:3",L"Обрезка 1:1",L"Применить",L"Отмена", L"Оживить предпросмотр", g_editorDark ? L"Тема: чёрная" : L"Тема: светлая"};
         int ids[] = {ED_RESET,ED_FREE,ED_169,ED_43,ED_11,ED_APPLY,ED_CANCEL,ED_PAUSE,ED_THEME};
         for(int i=0;i<9;i++) g_edButtons[i]=EditorChild(h,L"BUTTON",labels[i],WS_TABSTOP | BS_OWNERDRAW,ids[i]);
         SetEditorLabels(); EditorLayout(h);
         g_previewMessage = false;
         EnterCriticalSection(&g_cs);
-        g_previewWindow = g_edPreview; g_freezePreviewRequest = g_editorRestorePlayback;
+        g_previewWindow = g_edPreview; g_previewFrozen = true; g_previewRefresh = true;
         LeaveCriticalSection(&g_cs);
         p_repaint = true;
         return 0;
@@ -1906,30 +2017,6 @@ static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (d->itemState & ODS_FOCUS) { RECT focus=r; InflateRect(&focus, -S(3), -S(3)); DrawFocusRect(dc, &focus); }
         SelectObject(dc, oldFont); return TRUE;
     }
-    case WM_NOTIFY: {
-        NMHDR* hdr = (NMHDR*)lp;
-        if (!hdr || hdr->code != NM_CUSTOMDRAW) break;
-        bool slider = false; for (HWND track : g_edTracks) if (track == hdr->hwndFrom) slider = true;
-        if (!slider) break;
-        NMCUSTOMDRAW* cd = (NMCUSTOMDRAW*)lp;
-        if (cd->dwDrawStage == CDDS_PREPAINT) {
-            RECT r; GetClientRect(hdr->hwndFrom, &r);
-            Fill(cd->hdc, r, g_editorDark ? RGB(12,12,12) : GetSysColor(COLOR_BTNFACE));
-            return CDRF_NOTIFYITEMDRAW;
-        }
-        if (cd->dwDrawStage == CDDS_ITEMPREPAINT) {
-            RECT r = cd->rc;
-            if (cd->dwItemSpec == TBCD_CHANNEL) {
-                int cy=(r.top+r.bottom)/2; r.top=cy-S(3); r.bottom=cy+S(3);
-                Round(cd->hdc, r, S(4), g_editorDark ? RGB(70,78,91) : RGB(185,190,195),
-                      g_editorDark ? RGB(70,78,91) : RGB(185,190,195));
-            } else if (cd->dwItemSpec == TBCD_THUMB) {
-                Round(cd->hdc, r, S(6), C_ACC, C_ACC);
-            }
-            return CDRF_SKIPDEFAULT;
-        }
-        break;
-    }
     case WM_GETMINMAXINFO: {
         MINMAXINFO* mi=(MINMAXINFO*)lp; mi->ptMinTrackSize.x=S(800); mi->ptMinTrackSize.y=S(620); return 0;
     }
@@ -1947,23 +2034,21 @@ static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_COMMAND:
         switch(LOWORD(wp)) {
-        case ED_RESET: g_editDraft=VideoEdit{}; SetEditorLabels(); PublishEdit(); break;
+        case ED_RESET: g_editDraft=VideoEdit{}; SetEditorLabels(); for (HWND c : g_edMirror) InvalidateRect(c,nullptr,FALSE); PublishEdit(); break;
         case ED_FREE: EditorPreset(0); break;
         case ED_169: EditorPreset(16.0/9.0); break;
         case ED_43: EditorPreset(4.0/3.0); break;
         case ED_11: EditorPreset(1.0); break;
-        case ED_PAUSE:
-            EnterCriticalSection(&g_cs);
-            if (g_freezePreviewRequest.exchange(false)) p_userPause = false;
-            else p_userPause = !p_userPause.load();
-            g_editorRestorePlayback = false;
-            LeaveCriticalSection(&g_cs);
-            SetWindowTextW(g_edButtons[7], p_userPause.load() ? L"Продолжить видео" : L"Пауза видео");
-            InvalidateRect(g_main, nullptr, FALSE);
+        case ED_PAUSE: {
+            bool frozen = !g_previewFrozen.load();
+            g_previewFrozen = frozen; g_previewRefresh = true; p_repaint = true;
+            SetWindowTextW(g_edButtons[7], frozen ? L"Оживить предпросмотр" : L"Остановить кадр");
+            InvalidateRect(g_edButtons[7], nullptr, FALSE);
             break;
-        case ED_FLIP_X: g_editDraft.flipX = !g_editDraft.flipX; SetEditorLabels(); PublishEdit(); break;
-        case ED_FLIP_Y: g_editDraft.flipY = !g_editDraft.flipY; SetEditorLabels(); PublishEdit(); break;
-        case ED_INVERT: g_editDraft.invert = !g_editDraft.invert; SetEditorLabels(); PublishEdit(); break;
+        }
+        case ED_FLIP_X: g_editDraft.flipX = !g_editDraft.flipX; InvalidateRect(g_edMirror[0],nullptr,FALSE); PublishEdit(); break;
+        case ED_FLIP_Y: g_editDraft.flipY = !g_editDraft.flipY; InvalidateRect(g_edMirror[1],nullptr,FALSE); PublishEdit(); break;
+        case ED_INVERT: g_editDraft.invert = !g_editDraft.invert; InvalidateRect(g_edMirror[2],nullptr,FALSE); PublishEdit(); break;
         case ED_THEME:
             g_editorDark = !g_editorDark; EditorTitleTheme(h); SaveConfig();
             SetWindowTextW(g_edButtons[8], g_editorDark ? L"Тема: чёрная" : L"Тема: светлая");
@@ -1984,15 +2069,12 @@ static void OpenEditor() {
         return;
     }
     g_editorPath = g_items[(size_t)g_sel].path;
-    g_editorRestorePlayback = !p_userPause.load();
-    g_editOriginal = g_items[(size_t)g_sel].edit; g_editDraft = g_editOriginal;
+    g_editDraft = g_items[(size_t)g_sel].edit;
     g_editor = CreateWindowExW(WS_EX_DLGMODALFRAME, EDITOR_CLASS, L"Редактор кадра — LoopDesk",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, S(1050), S(700), g_main, nullptr, g_hi, nullptr);
     if (!g_editor) {
         EnterCriticalSection(&g_cs);
-        g_previewWindow = nullptr; g_freezePreviewRequest = false;
-        if (g_editorRestorePlayback) p_userPause = false;
-        g_editorRestorePlayback = false;
+        g_previewWindow = nullptr; g_previewRefresh = false;
         LeaveCriticalSection(&g_cs);
         MessageBoxW(g_main, L"Не удалось открыть редактор.", L"LoopDesk", MB_OK | MB_ICONERROR); return;
     }
@@ -2408,7 +2490,6 @@ static void ShowMain() {
 }
 static void TogglePause() {
     if (g_active < 0) return;
-    if (g_editor) { SendMessageW(g_editor, WM_COMMAND, ED_PAUSE, 0); return; }
     p_userPause = !p_userPause.load();
     InvalidateRect(g_main, nullptr, FALSE);
 }
@@ -2823,6 +2904,10 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
     ed.lpszClassName = EDITOR_CLASS; ed.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     ed.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); ed.hIcon = g_icon;
     RegisterClassExW(&ed);
+    WNDCLASSEXW slider = {};
+    slider.cbSize = sizeof(slider); slider.hInstance = hi; slider.lpfnWndProc = EditorSliderProc;
+    slider.lpszClassName = SLIDER_CLASS; slider.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    RegisterClassExW(&slider);
     WNDCLASSEXW pv = {};
     pv.cbSize = sizeof(pv); pv.hInstance = hi; pv.lpfnWndProc = PreviewProc;
     pv.lpszClassName = PREVIEW_CLASS; pv.hCursor = LoadCursorW(nullptr, IDC_CROSS);

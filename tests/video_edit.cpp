@@ -29,6 +29,23 @@ int main() {
     AdjustColors(pixel, 1, fx); assert(pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 200);
     fx = VideoEdit{}; fx.gamma = -100; fx.hue = 300; fx.warmth = 300;
     NormalizeEdit(fx); assert(fx.gamma == 25 && fx.hue == 180 && fx.warmth == 100);
+    // Verify the fast channel lookup against the scalar brightness/gamma/warmth formula.
+    for (int gamma : {25, 100, 225, 300}) for (int warm : {-100, -5, 0, 70, 100})
+        for (int contrast : {0, 70, 100, 200}) for (int inv : {0,1}) {
+            VideoEdit f; f.gamma=gamma; f.warmth=warm; f.contrast=contrast; f.invert=inv; f.brightness=13;
+            for (int v=0; v<256; v+=7) {
+                uint8_t pix[]={(uint8_t)v,(uint8_t)v,(uint8_t)v,99};
+                auto expected=[&](int value) {
+                    int x=std::clamp((value-128)*contrast/100+128+13*255/100,0,255);
+                    if (gamma!=100) x=(int)std::lround(255.0*std::pow(x/255.0,100.0/gamma));
+                    return inv ? 255-x : x;
+                };
+                AdjustColors(pix,1,f); int delta=warm*80/100;
+                assert(pix[0]==expected(std::clamp(v-delta,0,255)));
+                assert(pix[1]==expected(v));
+                assert(pix[2]==expected(std::clamp(v+delta,0,255)) && pix[3]==99);
+            }
+        }
     uint8_t image[16] = {1,0,0,0, 2,0,0,0, 3,0,0,0, 4,0,0,0};
     FlipImage(image,2,2,true,false); assert(image[0]==2 && image[4]==1 && image[8]==4 && image[12]==3);
     FlipImage(image,2,2,false,true); assert(image[0]==4 && image[4]==3 && image[8]==2 && image[12]==1);

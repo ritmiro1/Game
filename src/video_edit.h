@@ -51,6 +51,22 @@ inline void AdjustColors(uint8_t* pixels, size_t count, VideoEdit e) {
         if (e.gamma != 100) v = (int)std::lround(255.0 * std::pow(v / 255.0, 100.0 / e.gamma));
         lut[i] = e.invert ? 255 - v : v;
     }
+    const int warm = e.warmth * 80 / 100;
+    // Most edits do not change hue or saturation. Precompute separate channel
+    // lookups so the common case avoids per-pixel arithmetic and clamping.
+    if (e.hue == 0 && e.saturation == 100) {
+        uint8_t red[256], green[256], blue[256];
+        for (int i = 0; i < 256; ++i) {
+            red[i] = (uint8_t)lut[std::clamp(i + warm, 0, 255)];
+            green[i] = (uint8_t)lut[i];
+            blue[i] = (uint8_t)lut[std::clamp(i - warm, 0, 255)];
+        }
+        for (size_t i = 0; i < count; ++i) {
+            uint8_t* p = pixels + i * 4;
+            p[0] = blue[p[0]]; p[1] = green[p[1]]; p[2] = red[p[2]];
+        }
+        return;
+    }
     // Hue rotation in the RGB colour cube; coefficients are calculated once per frame.
     const double angle = e.hue * 3.14159265358979323846 / 180.0;
     const double c = std::cos(angle), sn = std::sin(angle);
@@ -63,7 +79,6 @@ inline void AdjustColors(uint8_t* pixels, size_t count, VideoEdit e) {
     const int br = (int)std::lround((.213 - .213*c - .787*sn)*8192);
     const int bg = (int)std::lround((.715 - .715*c + .715*sn)*8192);
     const int bb = (int)std::lround((.072 + .928*c + .072*sn)*8192);
-    const int warm = e.warmth * 80 / 100;
     for (size_t i = 0; i < count; ++i) {
         uint8_t* p = pixels + i * 4;
         int b = p[0], g = p[1], r = p[2];
