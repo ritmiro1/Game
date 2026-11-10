@@ -49,7 +49,7 @@ namespace VidDesk
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (s, e) => Fail(e.Exception, "Ошибка интерфейса");
 
-            Trace2.Step("==== VidDesk start, pid " + Process.GetCurrentProcess().Id
+            Trace2.Step("==== VidDesk " + AppInfo.Short + " start, pid " + Process.GetCurrentProcess().Id
                         + ", exe " + Application.ExecutablePath
                         + ", clr " + Environment.Version
                         + ", os " + Environment.OSVersion

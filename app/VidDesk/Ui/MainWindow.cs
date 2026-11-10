@@ -36,7 +36,7 @@ namespace VidDesk.Ui
         public MainWindow()
         {
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-            Text = "VidDesk — живые обои для рабочего стола";
+            Text = AppInfo.Title;
             BackColor = Pal.Bg;
             ForeColor = Pal.Text;
             Font = Pal.Base;
@@ -151,7 +151,7 @@ namespace VidDesk.Ui
                 ForeColor = Pal.Dim,
                 Font = Pal.Small,
                 Margin = Padding.Empty,
-                Text = "Движок: VLC " + Native.VlcEngine.Version
+                Text = AppInfo.Short + " · движок: VLC " + Native.VlcEngine.Version
             };
             left.Controls.Add(_status, 0, 2);
 
@@ -715,7 +715,7 @@ namespace VidDesk.Ui
                 : "○ Обои остановлены";
             _status.Text = s + "\n" + (Program.Engine == null
                 ? "Движок не загружен — см. лог"
-                : "Движок: VLC " + Native.VlcEngine.Version + " · F5 — применить");
+                : "Движок: VLC " + Native.VlcEngine.Version + " · " + AppInfo.Short + " · F5 — применить");
             _status.ForeColor = active ? Pal.Accent : Pal.Dim;
         }
 

@@ -15,9 +15,10 @@
     <Optimize>true</Optimize>
     <Company>VidDesk</Company>
     <Product>VidDesk Live Wallpapers</Product>
-    <FileVersion>1.0.0.0</FileVersion>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
     <Copyright>VidDesk, 2026. Independent implementation.</Copyright>
+    <DefineConstants>VIDDESK_STAMP</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
