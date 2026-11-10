@@ -1,0 +1,15 @@
+{
+  "revision": 1,
+  "source": "video-tools/input/armorypass-ejoy.mp4",
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "output_width": 8640,
+  "output_height": 15360,
+  "expected_frames": 1518,
+  "codec": "AV1",
+  "crf": 18,
+  "preserve_full_frame": true,
+  "copy_original_aac": true,
+  "generate_new_anatomy_or_actions": false,
+  "existing_4k_files": "unchanged",
+  "publication": "separate GitHub release asset after full validation"
+}
