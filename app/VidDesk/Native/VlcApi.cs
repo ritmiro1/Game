@@ -17,6 +17,11 @@ namespace VidDesk.Native
 
         internal static string ResolveRuntimeFolder()
         {
+            string env = Environment.GetEnvironmentVariable("VIDDESK_RUNTIME");
+            if (!string.IsNullOrEmpty(env) && File.Exists(Path.Combine(env, "libvlc.dll")))
+            {
+                return env;
+            }
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             string[] candidates =
             {

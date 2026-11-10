@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -13,6 +15,7 @@ namespace VidDesk
         public static AppState State { get; private set; }
         public static VlcEngine Engine { get; private set; }
         public static WallpaperService Wallpaper { get; private set; }
+        public static string RuntimePath { get; private set; }
 
         private const string MutexName = "Global\\VidDesk.SingleInstance.7d1c";
 
@@ -32,13 +35,54 @@ namespace VidDesk
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-                Application.ThreadException += (s, e) => LogCrash(e.Exception);
-                AppDomain.CurrentDomain.UnhandledException += (s, e) => LogCrash(e.ExceptionObject as Exception);
+                Application.ThreadException += (s, e) => Fail(e.Exception, "Ошибка интерфейса");
+                AppDomain.CurrentDomain.UnhandledException += (s, e) => Fail(e.ExceptionObject as Exception, "Критическая ошибка");
 
-                VlcApi.Load();
+                try
+                {
+                    Boot(args);
+                }
+                catch (Exception ex)
+                {
+                    Fail(ex, "Не удалось запустить VidDesk");
+                }
+            }
+        }
+
+        private static void Boot(string[] args)
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+            Splash splash = null;
+            try
+            {
+                string external = null;
+                if (RuntimeBootstrap.HasEmbeddedRuntime)
+                {
+                    splash = new Splash();
+                    splash.Show();
+                    splash.Report("Распаковка медиадвижка…");
+                    Application.DoEvents();
+                }
+
+                RuntimePath = RuntimeBootstrap.EnsureRuntime(splash);
+                if (splash != null)
+                {
+                    splash.Report("Загрузка движка…");
+                    Application.DoEvents();
+                }
+                RuntimeBootstrap.RegisterNativeSearchPath(RuntimePath);
+
                 State = SettingsStore.Load();
                 Engine = new VlcEngine();
                 Wallpaper = new WallpaperService(Engine);
+
+                if (splash != null)
+                {
+                    splash.Report("Готово (" + (sw.ElapsedMilliseconds / 1000.0).ToString("0.0") + " с)");
+                    splash.Close();
+                    splash.Dispose();
+                    splash = null;
+                }
 
                 using (TrayContext context = new TrayContext(args))
                 {
@@ -49,15 +93,60 @@ namespace VidDesk
                 Wallpaper.Dispose();
                 Engine.Dispose();
             }
+            catch (Exception ex)
+            {
+                if (splash != null && !splash.IsDisposed)
+                {
+                    try { splash.Close(); } catch { }
+                }
+                Log("boot", ex);
+                ShowFatal(ex);
+            }
         }
 
-        private static void LogCrash(Exception ex)
+        private static void Fail(Exception ex, string title)
+        {
+            Log("unhandled", ex);
+            ShowFatal(ex);
+        }
+
+        private static void ShowFatal(Exception ex)
+        {
+            try
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("VidDesk не смог продолжить работу.");
+                sb.AppendLine();
+                sb.AppendLine(ex == null ? "Неизвестная ошибка." : ex.Message);
+                sb.AppendLine();
+                sb.AppendLine("Движок: " + (RuntimePath ?? RuntimeBootstrap.RuntimeDir));
+                sb.AppendLine("Лог: " + LogPath);
+                MessageBox.Show(sb.ToString(), "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch { }
+        }
+
+        public static string LogPath
+        {
+            get
+            {
+                try
+                {
+                    Directory.CreateDirectory(SettingsStore.DataFolder);
+                    return Path.Combine(SettingsStore.DataFolder, "viddesk.log");
+                }
+                catch { return "—"; }
+            }
+        }
+
+        internal static void Log(string tag, Exception ex)
         {
             try
             {
                 Directory.CreateDirectory(SettingsStore.DataFolder);
-                File.AppendAllText(Path.Combine(SettingsStore.DataFolder, "crash.log"),
-                    DateTime.Now + "  " + (ex == null ? "unknown" : ex.ToString()) + Environment.NewLine);
+                File.AppendAllText(Path.Combine(SettingsStore.DataFolder, "viddesk.log"),
+                    DateTime.Now.ToString("u") + " [" + tag + "] "
+                    + (ex == null ? "unknown" : ex.ToString()) + Environment.NewLine);
             }
             catch { }
         }

@@ -36,6 +36,15 @@ jobs:
             throw "dotnet build failed"
           }
 
+      - name: Resolve C# compiler
+        shell: pwsh
+        run: |
+          $csc = Get-ChildItem "$env:ProgramFiles\dotnet\sdk" -Recurse -Filter csc.dll -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -match 'Roslyn\\bincore' } | Select-Object -First 1
+          if (-not $csc) { throw "csc.dll not found" }
+          Write-Host "csc: $($csc.FullName)"
+          "CSC_DLL=$($csc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Fetch media runtime
         shell: pwsh
         run: |
@@ -77,8 +86,45 @@ jobs:
             Copy-Item "app/VidDesk/bin/Release/net48/ffmpeg.exe" $stage
           }
           Copy-Item README.md $stage
-          Compress-Archive -Path "$stage/*" -DestinationPath "VidDesk-portable.zip" -Force
-          Get-ChildItem "VidDesk-portable.zip" | Format-List Name, Length
+          Write-Host "portable folder staged for reference"
+
+
+      - name: Embed runtime into single EXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = "app/VidDesk/bin/Release/net48"
+          # 1. bundle the media runtime
+          $runtimeDir = Join-Path $build "libvlc"
+          Compress-Archive -Path "$runtimeDir/*" -DestinationPath "$build/VidDesk.runtime.zip" -CompressionLevel Optimal -Force
+          Get-ChildItem "$build/VidDesk.runtime.zip" | Format-List Name, Length
+
+          # 2. recompile with the archive embedded as a managed resource
+          $sources = Get-ChildItem -Path "app/VidDesk" -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch '\\obj\\|\\bin\\' } | ForEach-Object { $_.FullName }
+          $refs = @()
+          $framework = "C:/Windows/Microsoft.NET/Framework64/v4.0.30319"
+          $refs += "$framework/System.dll"
+          $refs += "$framework/System.Core.dll"
+          $refs += "$framework/System.Drawing.dll"
+          $refs += "$framework/System.Windows.Forms.dll"
+          $refs += "$framework/System.Runtime.Serialization.dll"
+          $refs += "$framework/System.Xml.dll"
+          $refs += "$framework/Microsoft.CSharp.dll"
+          $refArgs = $refs | ForEach-Object { "/reference:$($_)" }
+          $resArg = "/resource:$build/VidDesk.runtime.zip,VidDesk.runtime.zip"
+          $iconArg = "/win32icon:app/VidDesk/app.ico"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & dotnet $env:CSC_DLL /nologo /target:winexe /platform:anycpu /optimize+ /debug- /out:dist/VidDesk.exe $resArg $iconArg $refArgs $sources
+          if ($LASTEXITCODE -ne 0) { throw "csc failed" }
+          Get-ChildItem dist | Format-List Name, Length
+          if (-not (Test-Path "dist/VidDesk.exe")) { throw "single-file build missing" }
+
+      - name: Verify single-file payload
+        shell: pwsh
+        run: |
+          $exe = Get-Item "dist/VidDesk.exe"
+          Write-Host ("VidDesk.exe = {0:N1} MB" -f ($exe.Length / 1MB))
+          if ($exe.Length -lt 20MB) { throw "runtime resource missing, exe too small" }
 
       - name: Publish rolling release
         if: github.ref == 'refs/heads/arena/01c96a79-game'
@@ -88,11 +134,11 @@ jobs:
         run: |
           gh release view v1.0 > $null 2>&1
           if ($LASTEXITCODE -ne 0) {
-            gh release create v1.0 --title "VidDesk 1.0" --notes "Portable build: unzip and run VidDesk.exe. Video engine (LibVLC) is bundled." --latest
+            gh release create v1.0 --title "VidDesk 1.0" --notes "Single-file build: download VidDesk.exe and run it. The video engine (LibVLC) is embedded and unpacked to %LOCALAPPDATA%\VidDesk\runtime on first start." --latest
           }
-          gh release upload v1.0 VidDesk-portable.zip --clobber
+          gh release upload v1.0 dist/VidDesk.exe --clobber
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VidDesk-portable
-          path: VidDesk-portable.zip
+          name: VidDesk
+          path: dist/VidDesk.exe

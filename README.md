@@ -7,11 +7,13 @@
 
 ## Скачать
 
-Готовый портативный архив (внутри `VidDesk.exe` + медиадвижок, ничего ставить не нужно):
+Один файл, без архива и установки:
 
-**https://github.com/ritmiro1/Game/releases/latest/download/VidDesk-portable.zip**
+**https://github.com/ritmiro1/Game/releases/latest/download/VidDesk.exe**
 
-Распакуйте в любую папку и запустите `VidDesk.exe`. Требуется Windows 10/11 (x64).
+Скачайте и запустите. Медиадвижок (LibVLC) встроен в exe и при первом старте
+распаковывается в `%LOCALAPPDATA%\VidDesk\runtime` (занимает пару секунд, дальше
+запуск мгновенный). Требуется Windows 10/11 x64, .NET Framework 4.8 (есть в системе).
 
 ## Что умеет
 
@@ -29,7 +31,8 @@
 
 - `F5` — применить выбранный ролик на рабочий стол;
 - закрытие окна не выключает обои — программа живёт в трее; выход через меню значка;
-- настройки хранятся в `%APPDATA%\VidDesk\library.json`.
+- настройки хранятся в `%APPDATA%\VidDesk\library.json`, лог ошибок — в
+  `%APPDATA%\VidDesk\viddesk.log` (если что-то не запустилось, пришлите этот файл).
 
 ## Сборка из исходников
 
@@ -37,8 +40,10 @@
 dotnet build app/VidDesk/VidDesk.csproj -c Release
 ```
 
-Затем положите рядом с `VidDesk.exe` папку `libvlc` из дистрибутива VLC 3.0.x (x64)
-(в релизном архиве она уже внутри). CI-сборка: `.github/workflows/build.yml`.
+Для релизного однoфайлового exe CI скачивает VLC 3.0.x, упаковывает рантайм в zip и
+вшивает его ресурсом в сборку (`/resource:` через Roslyn csc) — см.
+`.github/workflows/build.yml`. Для локальной отладки достаточно положить папку `libvlc`
+рядом с exe.
 
 ## Лицензии
 
