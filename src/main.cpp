@@ -113,7 +113,7 @@ static bool g_tracking = false;
 static RECT g_volTrack = {}, g_speedTrack = {}, g_gridRc = {}, g_panelRc = {};
 static std::wstring g_filter;
 static bool g_optFsPause = true, g_optAutorun = false, g_mfOk = false;
-static bool g_optEcoPause = false, g_sessionLocked = false, g_displayOff = false;
+static bool g_optEcoPause = false, g_sessionLocked = false, g_displayOff = false, g_editorDark = true;
 static HPOWERNOTIFY g_displayNotify = nullptr;
 // GUID_CONSOLE_DISPLAY_STATE (0 = off, 1 = on, 2 = dimmed).
 static const GUID kConsoleDisplayState = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47}};
@@ -127,9 +127,10 @@ static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0}, p_speed{100};
 static std::atomic<bool> p_mute{false};
 static VideoEdit p_edit; // guarded by g_cs
 static std::atomic<HWND> g_previewWindow{nullptr};
-static std::atomic<bool> g_previewMessage{false};
+static std::atomic<bool> g_previewMessage{false}, g_freezePreviewRequest{false};
 static std::vector<BYTE> g_previewPixels; // guarded by g_cs
 static int g_previewWidth = 0, g_previewHeight = 0;
+static bool g_editorRestorePlayback = false; // UI thread only
 static HANDLE p_thread = nullptr;
 static std::wstring p_path;
 // UI requests are deferred until the old player thread has actually exited.
@@ -257,6 +258,7 @@ static void SaveConfig() {
     std::string s = "version=1\r\n";
     s += std::string("fspause=") + (g_optFsPause ? "1" : "0") + "\r\n";
     s += std::string("ecopause=") + (g_optEcoPause ? "1" : "0") + "\r\n";
+    s += std::string("editordark=") + (g_editorDark ? "1" : "0") + "\r\n";
     s += "active=" + (g_active >= 0 ? WToU8(g_items[(size_t)g_active].path) : std::string()) + "\r\n";
     s += "selected=" + (g_sel >= 0 ? WToU8(g_items[(size_t)g_sel].path) : std::string()) + "\r\n";
     for (auto& it : g_items) {
@@ -268,6 +270,8 @@ static void SaveConfig() {
              std::to_string(e.brightness) + "|" + std::to_string(e.contrast) + "|" +
              std::to_string(e.saturation) + "|" + WToU8(it.path) + "\r\n";
         s += "mirror=" + std::to_string((int)e.flipX) + "|" + std::to_string((int)e.flipY) + "|" + WToU8(it.path) + "\r\n";
+        s += "fx=" + std::to_string(e.gamma) + "|" + std::to_string(e.warmth) + "|" +
+             std::to_string(e.hue) + "|" + std::to_string((int)e.invert) + "|" + WToU8(it.path) + "\r\n";
     }
     HANDLE f = CreateFileW((ConfigDir() + L"\\config.txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -321,6 +325,7 @@ static std::wstring LoadConfig() {  // returns path of the wallpaper that was ac
         std::string key = line.substr(0, q), val = line.substr(q + 1);
         if (key == "fspause") g_optFsPause = (val != "0");
         else if (key == "ecopause") g_optEcoPause = (val != "0");
+        else if (key == "editordark") g_editorDark = (val != "0");
         else if (key == "active") active = U8ToW(val);
         else if (key == "selected") selected = U8ToW(val);
         else if (key == "speed") {
@@ -340,6 +345,19 @@ static std::wstring LoadConfig() {  // returns path of the wallpaper that was ac
                 &e.left, &e.top, &e.right, &e.bottom, &e.brightness, &e.contrast, &e.saturation) == 7) {
                 int k = FindItem(U8ToW(val.substr(pathPos)));
                 if (k >= 0) { NormalizeEdit(e); g_items[(size_t)k].edit = e; }
+            }
+        } else if (key == "fx") {
+            size_t pos = 0;
+            for (int i=0; i<4 && pos!=std::string::npos; ++i) {
+                pos = val.find('|', pos); if (pos != std::string::npos) ++pos;
+            }
+            int gamma=100, warmth=0, hue=0, invert=0;
+            if (pos != std::string::npos && sscanf(val.c_str(), "%d|%d|%d|%d|", &gamma,&warmth,&hue,&invert)==4) {
+                int k = FindItem(U8ToW(val.substr(pos)));
+                if (k >= 0) {
+                    VideoEdit& e = g_items[(size_t)k].edit;
+                    e.gamma = gamma; e.warmth = warmth; e.hue = hue; e.invert = invert != 0; NormalizeEdit(e);
+                }
             }
         } else if (key == "mirror") {
             size_t a = val.find('|'), b = a == std::string::npos ? a : val.find('|', a + 1);
@@ -870,12 +888,15 @@ struct Player {
             previewBits = (BYTE*)ptr; previewOld = SelectObject(previewDC, previewBmp);
             previewW = nw; previewH = nh;
         }
-        SetStretchBltMode(previewDC, COLORONCOLOR);
+        SetStretchBltMode(previewDC, HALFTONE);
+        SetBrushOrgEx(previewDC, 0, 0, nullptr);
         if (!StretchBlt(previewDC, 0, 0, previewW, previewH, mem, visible.left, visible.top, aw, ah, SRCCOPY)) return;
         GdiFlush();
         EnterCriticalSection(&g_cs);
+        if (g_previewWindow.load() != target) { LeaveCriticalSection(&g_cs); return; }
         g_previewPixels.assign(previewBits, previewBits + (size_t)previewW * previewH * 4);
         g_previewWidth = previewW; g_previewHeight = previewH;
+        if (g_freezePreviewRequest.exchange(false)) p_userPause = true;
         LeaveCriticalSection(&g_cs);
         previewAt = NowSec();
         if (!g_previewMessage.exchange(true)) {
@@ -886,11 +907,8 @@ struct Player {
         if (!haveFrame || !mem) return;
         VideoEdit e;
         EnterCriticalSection(&g_cs); e = p_edit; LeaveCriticalSection(&g_cs);
-        if (!frameProcessed || e.brightness != appliedColor.brightness ||
-            e.contrast != appliedColor.contrast || e.saturation != appliedColor.saturation ||
-            e.flipX != appliedColor.flipX || e.flipY != appliedColor.flipY) {
-            bool hadColor = frameProcessed && (appliedColor.brightness != 0 || appliedColor.contrast != 100 ||
-                                                appliedColor.saturation != 100 || appliedColor.flipX || appliedColor.flipY);
+        if (!frameProcessed || !SameColorAdjustments(e, appliedColor)) {
+            bool hadColor = frameProcessed && (HasColorAdjustments(appliedColor) || appliedColor.flipX || appliedColor.flipY);
             GdiFlush();
             if (hadColor && rawFrame.size() == (size_t)dw * dh * 4) memcpy(bits, rawFrame.data(), rawFrame.size());
             FlipImage(bits, (int)dw, (int)dh, e.flipX, e.flipY);
@@ -1544,14 +1562,21 @@ static std::wstring MetaText(const Item& it) {
 
 // ------------------------------------------------------------------ non-destructive frame editor
 static HWND g_editor = nullptr, g_edPreview = nullptr;
-static HWND g_edTracks[3] = {}, g_edLabels[3] = {}, g_edButtons[8] = {}, g_edMirror[2] = {}, g_edTitle = nullptr;
+static HWND g_edTracks[6] = {}, g_edLabels[6] = {}, g_edButtons[9] = {}, g_edMirror[3] = {}, g_edTitle = nullptr;
+static HBRUSH g_editorDarkBrush = nullptr;
+static HDC g_previewPaintDC = nullptr;
+static HBITMAP g_previewPaintBitmap = nullptr;
+static HGDIOBJ g_previewPaintOld = nullptr;
+static int g_previewPaintW = 0, g_previewPaintH = 0;
 static std::wstring g_editorPath;
 static VideoEdit g_editOriginal, g_editDraft;
 static RECT g_previewImage = {};
 static int g_cropDrag = 0, g_cropLast = 16;
 static POINT g_cropAnchor = {};
 static VideoEdit g_dragOriginal;
-enum { ED_BRIGHT = 101, ED_CONTRAST, ED_SAT, ED_RESET = 110, ED_FREE, ED_169, ED_43, ED_11, ED_APPLY, ED_CANCEL, ED_FLIP_X, ED_FLIP_Y, ED_PAUSE };
+enum { ED_BRIGHT = 101, ED_CONTRAST, ED_SAT, ED_GAMMA, ED_WARMTH, ED_HUE,
+       ED_RESET = 110, ED_FREE, ED_169, ED_43, ED_11, ED_APPLY, ED_CANCEL,
+       ED_FLIP_X, ED_FLIP_Y, ED_PAUSE, ED_INVERT, ED_THEME };
 static const wchar_t* EDITOR_CLASS = L"LoopDeskEditor";
 static const wchar_t* PREVIEW_CLASS = L"LoopDeskPreview";
 
@@ -1562,15 +1587,16 @@ static void PublishEdit() {
     if (g_edPreview) InvalidateRect(g_edPreview, nullptr, FALSE);
 }
 static void SetEditorLabels() {
-    const wchar_t* names[] = {L"Яркость", L"Контраст", L"Насыщенность"};
-    int values[] = {g_editDraft.brightness, g_editDraft.contrast, g_editDraft.saturation};
-    for (int i = 0; i < 3; ++i) {
+    const wchar_t* names[] = {L"Яркость", L"Контраст", L"Насыщенность", L"Гамма", L"Теплота", L"Цветовой тон"};
+    int values[] = {g_editDraft.brightness, g_editDraft.contrast, g_editDraft.saturation,
+                    g_editDraft.gamma, g_editDraft.warmth, g_editDraft.hue};
+    for (int i = 0; i < 6; ++i) {
         wchar_t text[96]; _snwprintf(text, 95, L"%ls: %d", names[i], values[i]); text[95] = 0;
         if (g_edLabels[i]) SetWindowTextW(g_edLabels[i], text);
-        if (g_edTracks[i]) SendMessageW(g_edTracks[i], TBM_SETPOS, TRUE, i == 0 ? values[i] + 100 : values[i]);
+        int pos = i == 0 || i == 4 ? values[i] + 100 : i == 5 ? values[i] + 180 : values[i];
+        if (g_edTracks[i]) SendMessageW(g_edTracks[i], TBM_SETPOS, TRUE, pos);
     }
-    if (g_edMirror[0]) SendMessageW(g_edMirror[0], BM_SETCHECK, g_editDraft.flipX ? BST_CHECKED : BST_UNCHECKED, 0);
-    if (g_edMirror[1]) SendMessageW(g_edMirror[1], BM_SETCHECK, g_editDraft.flipY ? BST_CHECKED : BST_UNCHECKED, 0);
+    for (HWND h : g_edMirror) if (h) InvalidateRect(h, nullptr, FALSE);
 }
 static void CloseEditor(bool apply) {
     if (!g_editor) return;
@@ -1578,7 +1604,11 @@ static void CloseEditor(bool apply) {
     if (apply && idx >= 0) { g_items[(size_t)idx].edit = g_editDraft; SaveConfig(); }
     if (!apply) g_editDraft = g_editOriginal;
     if (idx >= 0 && idx == g_active) PublishEdit();
-    g_previewWindow = nullptr;
+    EnterCriticalSection(&g_cs);
+    g_previewWindow = nullptr; g_freezePreviewRequest = false;
+    if (g_editorRestorePlayback) p_userPause = false;
+    g_editorRestorePlayback = false;
+    LeaveCriticalSection(&g_cs);
     HWND h = g_editor;
     g_editor = nullptr; g_edPreview = nullptr;
     DestroyWindow(h);
@@ -1607,10 +1637,30 @@ static LRESULT CALLBACK PreviewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_ERASEBKGND: return 1;
     case WM_APP_PREVIEW:
-        g_previewMessage = false; InvalidateRect(h, nullptr, FALSE); return 0;
+        g_previewMessage = false;
+        if (g_edButtons[7]) {
+            const wchar_t* wanted = p_userPause.load() ? L"Продолжить видео" : L"Пауза видео";
+            wchar_t current[64]; GetWindowTextW(g_edButtons[7], current, 64);
+            if (lstrcmpW(current, wanted)) {
+                SetWindowTextW(g_edButtons[7], wanted); InvalidateRect(g_edButtons[7], nullptr, FALSE);
+                InvalidateRect(g_main, nullptr, FALSE);
+            }
+        }
+        InvalidateRect(h, nullptr, FALSE); return 0;
     case WM_PAINT: {
-        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
-        RECT client; GetClientRect(h, &client); FillRect(dc, &client, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        PAINTSTRUCT ps; HDC screen = BeginPaint(h, &ps);
+        RECT client; GetClientRect(h, &client);
+        int width = std::max(1L, client.right), height = std::max(1L, client.bottom);
+        if (!g_previewPaintDC) g_previewPaintDC = CreateCompatibleDC(screen);
+        if (g_previewPaintDC && (!g_previewPaintBitmap || width != g_previewPaintW || height != g_previewPaintH)) {
+            if (g_previewPaintOld) SelectObject(g_previewPaintDC, g_previewPaintOld);
+            if (g_previewPaintBitmap) DeleteObject(g_previewPaintBitmap);
+            g_previewPaintBitmap = CreateCompatibleBitmap(screen, width, height);
+            g_previewPaintOld = g_previewPaintBitmap ? SelectObject(g_previewPaintDC, g_previewPaintBitmap) : nullptr;
+            g_previewPaintW = width; g_previewPaintH = height;
+        }
+        HDC dc = g_previewPaintBitmap ? g_previewPaintDC : screen;
+        FillRect(dc, &client, (HBRUSH)GetStockObject(BLACK_BRUSH));
         EnterCriticalSection(&g_cs);
         int w = g_previewWidth, ht = g_previewHeight;
         g_previewImage = PreviewImageRect(h, w, ht);
@@ -1618,20 +1668,19 @@ static LRESULT CALLBACK PreviewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
             bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -ht; bi.bmiHeader.biPlanes = 1;
             bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
-            SetStretchBltMode(dc, COLORONCOLOR);
+            SetStretchBltMode(dc, HALFTONE);
+            SetBrushOrgEx(dc, 0, 0, nullptr);
             StretchDIBits(dc, g_previewImage.left, g_previewImage.top, g_previewImage.right-g_previewImage.left,
                           g_previewImage.bottom-g_previewImage.top, 0, 0, w, ht, g_previewPixels.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
         }
         LeaveCriticalSection(&g_cs);
         if (w > 0 && ht > 0) {
             RECT c = CropOnPreview();
-            int save = SaveDC(dc);
-            IntersectClipRect(dc, g_previewImage.left, g_previewImage.top, g_previewImage.right, g_previewImage.bottom);
-            ExcludeClipRect(dc, c.left, c.top, c.right, c.bottom);
-            SetBkMode(dc, TRANSPARENT);
-            HBRUSH hatch = CreateHatchBrush(HS_BDIAGONAL, RGB(15, 15, 15));
-            FillRect(dc, &g_previewImage, hatch); DeleteObject(hatch);
-            RestoreDC(dc, save);
+            // A solid outline avoids the moving hatch pattern that caused visual noise.
+            HPEN shadow = CreatePen(PS_SOLID, std::max(4, S(4)), RGB(0,0,0));
+            HGDIOBJ p0 = SelectObject(dc, shadow), b0 = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            Rectangle(dc, c.left, c.top, c.right, c.bottom);
+            SelectObject(dc, b0); SelectObject(dc, p0); DeleteObject(shadow);
             HPEN pen = CreatePen(PS_SOLID, std::max(2, S(2)), RGB(255,255,255));
             HGDIOBJ oldPen = SelectObject(dc, pen), oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
             Rectangle(dc, c.left, c.top, c.right, c.bottom);
@@ -1647,6 +1696,7 @@ static LRESULT CALLBACK PreviewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(220,220,220));
             DrawTextW(dc, L"Ожидание кадра видео…", -1, &client, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
+        if (g_previewPaintBitmap) BitBlt(screen, 0, 0, client.right, client.bottom, g_previewPaintDC, 0, 0, SRCCOPY);
         EndPaint(h, &ps); return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -1707,6 +1757,13 @@ static LRESULT CALLBACK PreviewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         PublishEdit(); return 0;
     }
     case WM_CAPTURECHANGED: g_cropDrag = 0; return 0;
+    case WM_DESTROY:
+        if (g_previewPaintDC && g_previewPaintOld) SelectObject(g_previewPaintDC, g_previewPaintOld);
+        if (g_previewPaintBitmap) DeleteObject(g_previewPaintBitmap);
+        if (g_previewPaintDC) DeleteDC(g_previewPaintDC);
+        g_previewPaintDC = nullptr; g_previewPaintBitmap = nullptr; g_previewPaintOld = nullptr;
+        g_previewPaintW = g_previewPaintH = 0;
+        return 0;
     }
     return DefWindowProcW(h, m, wp, lp);
 }
@@ -1727,19 +1784,42 @@ static void EditorPreset(double aspect) {
 }
 static void EditorLayout(HWND h) {
     RECT r; GetClientRect(h, &r); int w=r.right, ht=r.bottom;
-    int x=w-S(270), leftW=std::max(S(100), x-S(28));
+    int x=w-S(270), leftW=std::max(S(100), x-S(28)), half=S(121);
     MoveWindow(g_edPreview, S(12), S(46), leftW, std::max(S(100), ht-S(64)), TRUE);
     MoveWindow(g_edTitle, S(12), S(10), leftW, S(28), TRUE);
-    for (int i=0;i<3;i++) {
-        MoveWindow(g_edLabels[i], x, S(16+i*60), S(250), S(22), TRUE);
-        MoveWindow(g_edTracks[i], x, S(38+i*60), S(250), S(28), TRUE);
+    for (int i=0;i<6;i++) {
+        MoveWindow(g_edLabels[i], x, S(8+i*43), S(250), S(20), TRUE);
+        MoveWindow(g_edTracks[i], x, S(27+i*43), S(250), S(24), TRUE);
     }
-    MoveWindow(g_edMirror[0], x, S(200), S(250), S(24), TRUE);
-    MoveWindow(g_edMirror[1], x, S(226), S(250), S(24), TRUE);
-    for (int i=0;i<5;i++) MoveWindow(g_edButtons[i], x, S(258+i*34), S(250), S(29), TRUE);
-    MoveWindow(g_edButtons[7], x, S(432), S(250), S(29), TRUE);
-    MoveWindow(g_edButtons[5], x, ht-S(82), S(250), S(30), TRUE);
-    MoveWindow(g_edButtons[6], x, ht-S(44), S(250), S(30), TRUE);
+    for (int i=0;i<3;i++) MoveWindow(g_edMirror[i], x, S(269+i*24), S(250), S(23), TRUE);
+    MoveWindow(g_edButtons[1], x, S(344), half, S(27), TRUE);
+    MoveWindow(g_edButtons[2], x+S(129), S(344), half, S(27), TRUE);
+    MoveWindow(g_edButtons[3], x, S(375), half, S(27), TRUE);
+    MoveWindow(g_edButtons[4], x+S(129), S(375), half, S(27), TRUE);
+    MoveWindow(g_edButtons[0], x, S(406), S(250), S(27), TRUE);
+    MoveWindow(g_edButtons[7], x, S(437), S(250), S(27), TRUE);
+    MoveWindow(g_edButtons[8], x, S(468), S(250), S(27), TRUE);
+    MoveWindow(g_edButtons[5], x, ht-S(43), half, S(30), TRUE);
+    MoveWindow(g_edButtons[6], x+S(129), ht-S(43), half, S(30), TRUE);
+}
+static void EditorTitleTheme(HWND h) {
+    HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+    if (dwm) {
+        typedef HRESULT(WINAPI * Fn)(HWND, DWORD, LPCVOID, DWORD);
+        Fn fn = (Fn)(void*)GetProcAddress(dwm, "DwmSetWindowAttribute");
+        BOOL dark = g_editorDark ? TRUE : FALSE;
+        if (fn && FAILED(fn(h,20,&dark,sizeof(dark)))) fn(h,19,&dark,sizeof(dark));
+        FreeLibrary(dwm);
+    }
+}
+static void EditorSetTrackTheme(HWND w) {
+    HMODULE u = LoadLibraryW(L"uxtheme.dll");
+    if (u) {
+        typedef HRESULT(WINAPI * Fn)(HWND,LPCWSTR,LPCWSTR);
+        Fn fn = (Fn)(void*)GetProcAddress(u,"SetWindowTheme");
+        if (fn) fn(w,L"",L"");
+        FreeLibrary(u);
+    }
 }
 static HWND EditorChild(HWND parent, const wchar_t* cls, const wchar_t* label, DWORD style, int id) {
     HWND w = CreateWindowExW(0, cls, label, WS_CHILD | WS_VISIBLE | style, 0, 0, 1, 1, parent,
@@ -1752,29 +1832,116 @@ static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_CREATE: {
         g_edPreview = EditorChild(h, PREVIEW_CLASS, L"", 0, 200);
         g_edTitle = EditorChild(h, L"STATIC", L"Обрезка: перетащите рамку; стрелки — 0,1%, Shift — 1%", 0, 201);
-        for (int i=0;i<3;i++) {
+        if (!g_editorDarkBrush) g_editorDarkBrush = CreateSolidBrush(RGB(12,12,12));
+        EditorTitleTheme(h);
+        for (int i=0;i<6;i++) {
             g_edLabels[i] = EditorChild(h, L"STATIC", L"", 0, 210+i);
             g_edTracks[i] = EditorChild(h, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, ED_BRIGHT+i);
-            SendMessageW(g_edTracks[i], TBM_SETRANGE, TRUE, MAKELONG(0,200));
+            int low = i == 3 ? 25 : 0, high = i == 3 ? 300 : i == 5 ? 360 : 200;
+            SendMessageW(g_edTracks[i], TBM_SETRANGE, TRUE, MAKELONG(low, high));
             SendMessageW(g_edTracks[i], TBM_SETPAGESIZE, 0, 10);
+            EditorSetTrackTheme(g_edTracks[i]);
         }
-        g_edMirror[0] = EditorChild(h, L"BUTTON", L"Отразить по горизонтали", WS_TABSTOP | BS_AUTOCHECKBOX, ED_FLIP_X);
-        g_edMirror[1] = EditorChild(h, L"BUTTON", L"Отразить по вертикали", WS_TABSTOP | BS_AUTOCHECKBOX, ED_FLIP_Y);
-        const wchar_t* labels[] = {L"Сбросить всё",L"Весь кадр",L"Обрезка 16:9",L"Обрезка 4:3",L"Обрезка 1:1",L"Применить",L"Отмена", p_userPause.load() ? L"Продолжить видео" : L"Пауза видео"};
-        int ids[] = {ED_RESET,ED_FREE,ED_169,ED_43,ED_11,ED_APPLY,ED_CANCEL,ED_PAUSE};
-        for(int i=0;i<8;i++) g_edButtons[i]=EditorChild(h,L"BUTTON",labels[i],WS_TABSTOP | BS_PUSHBUTTON,ids[i]);
+        g_edMirror[0] = EditorChild(h, L"BUTTON", L"Отразить по горизонтали", WS_TABSTOP | BS_OWNERDRAW, ED_FLIP_X);
+        g_edMirror[1] = EditorChild(h, L"BUTTON", L"Отразить по вертикали", WS_TABSTOP | BS_OWNERDRAW, ED_FLIP_Y);
+        g_edMirror[2] = EditorChild(h, L"BUTTON", L"Инверсия цветов", WS_TABSTOP | BS_OWNERDRAW, ED_INVERT);
+        const wchar_t* labels[] = {L"Сбросить всё",L"Весь кадр",L"Обрезка 16:9",L"Обрезка 4:3",L"Обрезка 1:1",L"Применить",L"Отмена", p_userPause.load() ? L"Продолжить видео" : L"Пауза видео", g_editorDark ? L"Тема: чёрная" : L"Тема: светлая"};
+        int ids[] = {ED_RESET,ED_FREE,ED_169,ED_43,ED_11,ED_APPLY,ED_CANCEL,ED_PAUSE,ED_THEME};
+        for(int i=0;i<9;i++) g_edButtons[i]=EditorChild(h,L"BUTTON",labels[i],WS_TABSTOP | BS_OWNERDRAW,ids[i]);
         SetEditorLabels(); EditorLayout(h);
-        g_previewMessage = false; g_previewWindow = g_edPreview; p_repaint = true;
+        g_previewMessage = false;
+        EnterCriticalSection(&g_cs);
+        g_previewWindow = g_edPreview; g_freezePreviewRequest = g_editorRestorePlayback;
+        LeaveCriticalSection(&g_cs);
+        p_repaint = true;
         return 0;
     }
     case WM_SIZE: if (g_edPreview) EditorLayout(h); return 0;
+    case WM_ERASEBKGND: {
+        RECT r; GetClientRect(h, &r);
+        FillRect((HDC)wp, &r, g_editorDark && g_editorDarkBrush ? g_editorDarkBrush : GetSysColorBrush(COLOR_BTNFACE));
+        return 1;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = (HDC)wp;
+        SetTextColor(dc, g_editorDark ? RGB(235,238,245) : RGB(25,25,25));
+        SetBkColor(dc, g_editorDark ? RGB(12,12,12) : GetSysColor(COLOR_BTNFACE));
+        return (LRESULT)(g_editorDark && g_editorDarkBrush ? g_editorDarkBrush : GetSysColorBrush(COLOR_BTNFACE));
+    }
+    case WM_DRAWITEM: {
+        DRAWITEMSTRUCT* d = (DRAWITEMSTRUCT*)lp;
+        if (!d || d->CtlType != ODT_BUTTON) break;
+        HDC dc = d->hDC; RECT r = d->rcItem;
+        int id = (int)d->CtlID;
+        bool check = id == ED_FLIP_X || id == ED_FLIP_Y || id == ED_INVERT;
+        COLORREF bg = g_editorDark ? RGB(12,12,12) : GetSysColor(COLOR_BTNFACE);
+        COLORREF fg = g_editorDark ? RGB(235,238,245) : RGB(30,30,30);
+        Fill(dc, r, bg);
+        wchar_t text[128]; GetWindowTextW(d->hwndItem, text, 128);
+        HFONT font = g_fUI; HGDIOBJ oldFont = SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, fg);
+        RECT textRect = r;
+        if (check) {
+            bool checked = id == ED_FLIP_X ? g_editDraft.flipX : id == ED_FLIP_Y ? g_editDraft.flipY : g_editDraft.invert;
+            int boxSize = S(16); int cy = (r.top + r.bottom) / 2;
+            RECT box = {r.left + S(3), cy - boxSize/2, r.left + S(3) + boxSize, cy + (boxSize+1)/2};
+            Round(dc, box, S(3), checked ? C_ACC : (g_editorDark ? RGB(48,54,65) : RGB(255,255,255)),
+                  checked ? C_ACC : (g_editorDark ? RGB(120,130,145) : RGB(110,110,110)));
+            if (checked) {
+                HPEN pen = CreatePen(PS_SOLID, std::max(1, S(2)), RGB(255,255,255));
+                HGDIOBJ old = SelectObject(dc, pen);
+                MoveToEx(dc, box.left+S(3), box.top+S(8), nullptr); LineTo(dc, box.left+S(7), box.top+S(12));
+                LineTo(dc, box.left+S(13), box.top+S(4)); SelectObject(dc, old); DeleteObject(pen);
+            }
+            textRect.left = box.right + S(8);
+            DrawTextW(dc, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        } else {
+            bool primary = id == ED_APPLY;
+            COLORREF button = primary ? RGB(46,128,230) : (g_editorDark ? RGB(48,55,68) : RGB(248,248,248));
+            if (d->itemState & ODS_SELECTED) button = primary ? RGB(30,100,190) : (g_editorDark ? RGB(66,74,88) : RGB(215,215,215));
+            Round(dc, r, S(7), button, primary ? button : (g_editorDark ? RGB(80,90,105) : RGB(170,170,170)));
+            if (primary) SetTextColor(dc, RGB(255,255,255));
+            DrawTextW(dc, text, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+        if (d->itemState & ODS_FOCUS) { RECT focus=r; InflateRect(&focus, -S(3), -S(3)); DrawFocusRect(dc, &focus); }
+        SelectObject(dc, oldFont); return TRUE;
+    }
+    case WM_NOTIFY: {
+        NMHDR* hdr = (NMHDR*)lp;
+        if (!hdr || hdr->code != NM_CUSTOMDRAW) break;
+        bool slider = false; for (HWND track : g_edTracks) if (track == hdr->hwndFrom) slider = true;
+        if (!slider) break;
+        NMCUSTOMDRAW* cd = (NMCUSTOMDRAW*)lp;
+        if (cd->dwDrawStage == CDDS_PREPAINT) {
+            RECT r; GetClientRect(hdr->hwndFrom, &r);
+            Fill(cd->hdc, r, g_editorDark ? RGB(12,12,12) : GetSysColor(COLOR_BTNFACE));
+            return CDRF_NOTIFYITEMDRAW;
+        }
+        if (cd->dwDrawStage == CDDS_ITEMPREPAINT) {
+            RECT r = cd->rc;
+            if (cd->dwItemSpec == TBCD_CHANNEL) {
+                int cy=(r.top+r.bottom)/2; r.top=cy-S(3); r.bottom=cy+S(3);
+                Round(cd->hdc, r, S(4), g_editorDark ? RGB(70,78,91) : RGB(185,190,195),
+                      g_editorDark ? RGB(70,78,91) : RGB(185,190,195));
+            } else if (cd->dwItemSpec == TBCD_THUMB) {
+                Round(cd->hdc, r, S(6), C_ACC, C_ACC);
+            }
+            return CDRF_SKIPDEFAULT;
+        }
+        break;
+    }
     case WM_GETMINMAXINFO: {
         MINMAXINFO* mi=(MINMAXINFO*)lp; mi->ptMinTrackSize.x=S(800); mi->ptMinTrackSize.y=S(620); return 0;
     }
     case WM_HSCROLL:
-        for(int i=0;i<3;i++) if ((HWND)lp == g_edTracks[i]) {
+        for(int i=0;i<6;i++) if ((HWND)lp == g_edTracks[i]) {
             int val=(int)SendMessageW(g_edTracks[i],TBM_GETPOS,0,0);
-            if(i==0) g_editDraft.brightness=val-100; else if(i==1) g_editDraft.contrast=val; else g_editDraft.saturation=val;
+            if(i==0) g_editDraft.brightness=val-100;
+            else if(i==1) g_editDraft.contrast=val;
+            else if(i==2) g_editDraft.saturation=val;
+            else if(i==3) g_editDraft.gamma=val;
+            else if(i==4) g_editDraft.warmth=val-100;
+            else g_editDraft.hue=val-180;
             SetEditorLabels(); PublishEdit(); break;
         }
         return 0;
@@ -1786,12 +1953,22 @@ static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case ED_43: EditorPreset(4.0/3.0); break;
         case ED_11: EditorPreset(1.0); break;
         case ED_PAUSE:
-            p_userPause = !p_userPause.load();
+            EnterCriticalSection(&g_cs);
+            if (g_freezePreviewRequest.exchange(false)) p_userPause = false;
+            else p_userPause = !p_userPause.load();
+            g_editorRestorePlayback = false;
+            LeaveCriticalSection(&g_cs);
             SetWindowTextW(g_edButtons[7], p_userPause.load() ? L"Продолжить видео" : L"Пауза видео");
             InvalidateRect(g_main, nullptr, FALSE);
             break;
-        case ED_FLIP_X: g_editDraft.flipX = SendMessageW(g_edMirror[0], BM_GETCHECK, 0, 0) == BST_CHECKED; PublishEdit(); break;
-        case ED_FLIP_Y: g_editDraft.flipY = SendMessageW(g_edMirror[1], BM_GETCHECK, 0, 0) == BST_CHECKED; PublishEdit(); break;
+        case ED_FLIP_X: g_editDraft.flipX = !g_editDraft.flipX; SetEditorLabels(); PublishEdit(); break;
+        case ED_FLIP_Y: g_editDraft.flipY = !g_editDraft.flipY; SetEditorLabels(); PublishEdit(); break;
+        case ED_INVERT: g_editDraft.invert = !g_editDraft.invert; SetEditorLabels(); PublishEdit(); break;
+        case ED_THEME:
+            g_editorDark = !g_editorDark; EditorTitleTheme(h); SaveConfig();
+            SetWindowTextW(g_edButtons[8], g_editorDark ? L"Тема: чёрная" : L"Тема: светлая");
+            RedrawWindow(h, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+            break;
         case ED_APPLY: CloseEditor(true); break;
         case ED_CANCEL: CloseEditor(false); break;
         }
@@ -1807,10 +1984,18 @@ static void OpenEditor() {
         return;
     }
     g_editorPath = g_items[(size_t)g_sel].path;
+    g_editorRestorePlayback = !p_userPause.load();
     g_editOriginal = g_items[(size_t)g_sel].edit; g_editDraft = g_editOriginal;
     g_editor = CreateWindowExW(WS_EX_DLGMODALFRAME, EDITOR_CLASS, L"Редактор кадра — LoopDesk",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, S(1050), S(700), g_main, nullptr, g_hi, nullptr);
-    if (!g_editor) { MessageBoxW(g_main, L"Не удалось открыть редактор.", L"LoopDesk", MB_OK | MB_ICONERROR); return; }
+    if (!g_editor) {
+        EnterCriticalSection(&g_cs);
+        g_previewWindow = nullptr; g_freezePreviewRequest = false;
+        if (g_editorRestorePlayback) p_userPause = false;
+        g_editorRestorePlayback = false;
+        LeaveCriticalSection(&g_cs);
+        MessageBoxW(g_main, L"Не удалось открыть редактор.", L"LoopDesk", MB_OK | MB_ICONERROR); return;
+    }
     ShowWindow(g_editor, SW_SHOW); UpdateWindow(g_editor);
 }
 
@@ -2223,6 +2408,7 @@ static void ShowMain() {
 }
 static void TogglePause() {
     if (g_active < 0) return;
+    if (g_editor) { SendMessageW(g_editor, WM_COMMAND, ED_PAUSE, 0); return; }
     p_userPause = !p_userPause.load();
     InvalidateRect(g_main, nullptr, FALSE);
 }
