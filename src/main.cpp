@@ -677,6 +677,7 @@ struct Player {
     std::vector<float> inputPcm, resampled;
     SpeedResampler resampler{2};
     float smoothedGain = 1.0f;
+    StereoGainLimiter limiter;
     double audioSourceFrames = 0;
     bool noScale = false;
     long long shown = 0;
@@ -761,6 +762,7 @@ struct Player {
             resampler.warm();  // prepare before the playback clock starts
             resampler.reset(p_speed.load() / 100.0);
             smoothedGain = (p_mute.load() ? 0.0f : p_volume.load() / 100.0f);
+            limiter.reset(aRate);
             if (fmtOk && out.Open((int)r, outCh)) hasAudio = true;
             Log(L"audio: %u Hz, %u ch, %u bit, float=%d, ok=%d", r, c, b, (int)aFloat, (int)hasAudio);
         }
@@ -990,6 +992,13 @@ struct Player {
         default: { int v; memcpy(&v, p, 4); return (float)(v / 2147483648.0); }
         }
     }
+    void DestroyPreviewDC() {
+        if (previewDC && previewOld) SelectObject(previewDC, previewOld);
+        if (previewBmp) DeleteObject(previewBmp);
+        if (previewDC) DeleteDC(previewDC);
+        previewDC = nullptr; previewBmp = nullptr; previewOld = nullptr;
+        previewBits = nullptr; previewW = previewH = 0;
+    }
     void RenderFrame(IMFSample* sample, bool force) {
         if (layoutSeen != p_layoutGen.load()) LoadLayout();
         if (sample) CopyFrame(sample);
@@ -1016,6 +1025,9 @@ struct Player {
                     }
                 }
                 GdiFlush();
+                // A memory DC made with CreateCompatibleDC(nullptr) belongs to
+                // its creating thread; destroy it before that thread exits.
+                DestroyPreviewDC();
                 if (SUCCEEDED(co)) CoUninitialize();
             });
             renderAsync = true;
@@ -1079,10 +1091,10 @@ struct Player {
             const float smoothing = 1.0f - expf(-1.0f / (0.01f * aRate));
             for (size_t i = 0; i + 1 < resampled.size(); i += 2) {
                 smoothedGain += (targetGain - smoothedGain) * smoothing;
-                for (int c = 0; c < 2; ++c) {
-                    float v = ApplyAudioGain(resampled[i + c], smoothedGain);
-                    pcm[i + c] = (short)lrintf(v * 32767.0f);
-                }
+                float left = resampled[i], right = resampled[i + 1];
+                limiter.process(left, right, smoothedGain);
+                pcm[i] = (short)lrintf(left * 32767.0f);
+                pcm[i + 1] = (short)lrintf(right * 32767.0f);
             }
             frames = (int)(pcm.size() / 2);
             buf->Unlock();
@@ -1103,9 +1115,7 @@ struct Player {
             mem = nullptr;
         }
         if (dib) { DeleteObject(dib); dib = nullptr; }
-        if (previewDC && previewOld) SelectObject(previewDC, previewOld);
-        if (previewBmp) DeleteObject(previewBmp);
-        if (previewDC) DeleteDC(previewDC);
+        DestroyPreviewDC(); // also covers the synchronous fallback
         bits = nullptr;
     }
 

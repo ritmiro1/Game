@@ -17,6 +17,7 @@ int wmain(int argc, wchar_t** argv) {
     g_previewFrozen = false; g_previewRefresh = true;
     g_mon.push_back(RECT{0,0,320,240}); p_layoutGen = 1;
     p_path = argv[1]; p_speed = 100; p_volume = 500;
+    p_edit.hue = 45; p_edit.saturation = 130; p_edit.gamma = 120;
     int result = 0;
     {
         Player p;
@@ -39,6 +40,13 @@ int wmain(int argc, wchar_t** argv) {
             if (decoded < 5 || !p.haveFrame || g_previewGeneration == 0) {
                 std::fprintf(stderr,"decoder/render/preview failed: frames=%d frame=%d preview=%llu\n",
                              decoded,(int)p.haveFrame,g_previewGeneration); result=6;
+            }
+            // Media type changes restart the renderer. Its per-thread DC must
+            // be recreated before the next preview refresh.
+            auto generation = g_previewGeneration;
+            p.StartRenderer(); p.RequestRedraw(); Sleep(500); p.StopRenderer();
+            if (g_previewGeneration <= generation) {
+                std::fprintf(stderr, "renderer restart/preview failed\n"); result=10;
             }
             // Exercise the production PCM conversion, resampling, and gain path,
             // independent of whether the CI machine has an audio output device.
