@@ -55,7 +55,6 @@ namespace VidDesk
             Splash splash = null;
             try
             {
-                string external = null;
                 if (RuntimeBootstrap.HasEmbeddedRuntime)
                 {
                     splash = new Splash();
@@ -65,12 +64,12 @@ namespace VidDesk
                 }
 
                 RuntimePath = RuntimeBootstrap.EnsureRuntime(splash);
+                RuntimeBootstrap.RegisterNativeSearchPath(RuntimePath);
                 if (splash != null)
                 {
                     splash.Report("Загрузка движка…");
                     Application.DoEvents();
                 }
-                RuntimeBootstrap.RegisterNativeSearchPath(RuntimePath);
 
                 State = SettingsStore.Load();
                 Engine = new VlcEngine();
