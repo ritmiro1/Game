@@ -18,13 +18,29 @@ namespace VidDesk
         private const string ResourceName = "VidDesk.runtime.zip";
         private const string MarkerName = "runtime.stamp";
 
+        private static string _runtimeDir;
+
         public static string RuntimeDir
         {
             get
             {
-                return Path.Combine(
+                if (_runtimeDir != null) { return _runtimeDir; }
+                string local = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "VidDesk", "runtime");
+                _runtimeDir = local;
+                try
+                {
+                    Directory.CreateDirectory(local);
+                    File.WriteAllText(Path.Combine(local, ".probe"), "1");
+                    File.Delete(Path.Combine(local, ".probe"));
+                }
+                catch
+                {
+                    // Restricted profile: keep the runtime in TEMP instead.
+                    _runtimeDir = Path.Combine(Path.GetTempPath(), "VidDesk", "runtime");
+                }
+                return _runtimeDir;
             }
         }
 
@@ -55,10 +71,12 @@ namespace VidDesk
             string dir = RuntimeDir;
             string marker = Path.Combine(dir, MarkerName);
             string stamp = Stamp();
+            Trace2.Write("runtime: target " + dir);
 
             if (File.Exists(Path.Combine(dir, "libvlc.dll")) && File.Exists(marker)
                 && File.ReadAllText(marker).Trim() == stamp)
             {
+                Trace2.Write("runtime: already unpacked");
                 return dir;
             }
 
@@ -79,9 +97,11 @@ namespace VidDesk
             }
 
             if (progress != null) { progress.Report("Распаковка медиадвижка… 50 %"); }
+            Trace2.Write("runtime: extracting to " + dir);
             try
             {
                 ZipFile.ExtractToDirectory(tempZip, dir);
+                Trace2.Write("runtime: extracted");
             }
             finally
             {
