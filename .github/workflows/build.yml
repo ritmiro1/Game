@@ -1,0 +1,84 @@
+name: build
+
+on:
+  push:
+    branches: [arena/01c96a79-game, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build
+        run: dotnet build app/VidDesk/VidDesk.csproj -c Release -v minimal
+
+      - name: Fetch media runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = "app/VidDesk/bin/Release/net48/libvlc"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $ok = $false
+          $urls = @("https://download.videolan.org/pub/videolan/vlc/3.0.20/win64/vlc-3.0.20-win64.zip")
+          foreach ($url in $urls) {
+            try {
+              Write-Host "downloading $url"
+              Invoke-WebRequest -Uri $url -OutFile vlc.zip -TimeoutSec 600
+              Expand-Archive vlc.zip -DestinationPath vlc -Force
+              $root = Get-ChildItem vlc -Directory | Select-Object -First 1
+              Copy-Item "$($root.FullName)/*" $out -Recurse -Force
+              Copy-Item "$($root.FullName)/ffmpeg.exe" "app/VidDesk/bin/Release/net48/ffmpeg.exe" -Force -ErrorAction SilentlyContinue
+              $ok = $true
+            } catch { Write-Host "failed: $_" }
+          }
+          if (-not $ok) {
+            Write-Host "falling back to chocolatey vlc"
+            choco install vlc --no-progress -y
+            $src = "C:/Program Files/VideoLAN/VLC"
+            Copy-Item "$src/*" $out -Recurse -Force
+            Copy-Item "$src/ffmpeg.exe" "app/VidDesk/bin/Release/net48/ffmpeg.exe" -Force -ErrorAction SilentlyContinue
+          }
+          if (-not (Test-Path "$out/libvlc.dll")) { throw "libvlc.dll missing" }
+          $raw = Get-ChildItem $out | Measure-Object -Property Length -Sum
+          Write-Host ("runtime payload: {0:N1} MB in {1} items" -f ($raw.Sum/1MB), (Get-ChildItem $out -Recurse -File).Count)
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $stage = "stage/VidDesk"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "app/VidDesk/bin/Release/net48/VidDesk.exe" $stage
+          Copy-Item "app/VidDesk/bin/Release/net48/libvlc" "$stage/libvlc" -Recurse -Force
+          if (Test-Path "app/VidDesk/bin/Release/net48/ffmpeg.exe") {
+            Copy-Item "app/VidDesk/bin/Release/net48/ffmpeg.exe" $stage
+          }
+          Copy-Item README.md $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "VidDesk-portable.zip" -Force
+          Get-ChildItem "VidDesk-portable.zip" | Format-List Name, Length
+
+      - name: Publish rolling release
+        if: github.ref == 'refs/heads/arena/01c96a79-game'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view v1.0 > $null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            gh release create v1.0 --title "VidDesk 1.0" --notes "Portable build: unzip and run VidDesk.exe. Video engine (LibVLC) is bundled." --latest
+          }
+          gh release upload v1.0 VidDesk-portable.zip --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VidDesk-portable
+          path: VidDesk-portable.zip

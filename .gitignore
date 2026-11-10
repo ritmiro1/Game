@@ -1,0 +1,7 @@
+bin/
+obj/
+stage/
+dist/
+vlc/
+*.zip
+packages/
