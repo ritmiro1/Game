@@ -4,7 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
 
-namespace VidDesk.Ui
+namespace Lumen.Ui
 {
     /// <summary>Main shell: library rail on the left, live-preview and properties on the right.</summary>
     internal sealed class MainWindow : Form
@@ -27,7 +27,6 @@ namespace VidDesk.Ui
 
         private readonly Dictionary<string, Bitmap> _thumbs = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
         private readonly ImageList _tiles = new ImageList { ImageSize = new Size(176, 99), ColorDepth = ColorDepth.Depth32Bit };
-        private PreviewSurface _preview;
         private bool _syncing;
         private bool _ready;
         private readonly System.Windows.Forms.Timer _cycle;
@@ -68,7 +67,7 @@ namespace VidDesk.Ui
 
             Label brand = new Label
             {
-                Text = "VIDDESK",
+                Text = "LUMEN",
                 Font = new Font("Segoe UI Semibold", 13f),
                 ForeColor = Pal.Text,
                 AutoSize = true,
@@ -151,7 +150,7 @@ namespace VidDesk.Ui
                 ForeColor = Pal.Dim,
                 Font = Pal.Small,
                 Margin = Padding.Empty,
-                Text = AppInfo.Short + " · движок: VLC " + Native.VlcEngine.Version
+                Text = AppInfo.Short + " · отдельный процесс движка"
             };
             left.Controls.Add(_status, 0, 2);
 
@@ -215,14 +214,11 @@ namespace VidDesk.Ui
             _playlist.CheckedChanged += (s, e) => PlaylistChanged();
             _silent.CheckedChanged += (s, e) => SilentChanged();
 
-            if (Program.Engine != null)
+            if (Program.Client == null || !Program.Client.IsRunning)
             {
-                _preview = new PreviewSurface(Program.Engine);
-            }
-            else
-            {
-                _previewHint.Text = "Медиадвижок не загрузился.\n" + (Program.LastError ?? "Подробности в логе.") 
-                    + "\nЛог: " + Trace2.Path;
+                _previewHint.Text = "Медиадвижок не запустился."
+                    + Environment.NewLine + (Program.LastError ?? "Подробности в логе.")
+                    + Environment.NewLine + "Лог: " + Trace2.Path;
             }
 
             LoadLibrary();
@@ -243,11 +239,11 @@ namespace VidDesk.Ui
                 UpdateStatus();
                 StartPreview(Selected);
             };
-            ResizeBegin += (s, e) => { if (_preview != null) _preview.Hide(); };
+
             ResizeEnd += (s, e) => LayoutPreview();
-            Deactivate += (s, e) => { if (_preview != null) _preview.Hide(); };
+
             Activated += (s, e) => SyncFromSelection();
-            VisibleChanged += (s, e) => { if (!Visible && _preview != null) { _preview.Hide(); } };
+
             FormClosing += OnClosing;
             KeyDown += (s, e) => { if (e.KeyCode == Keys.F5) ApplySelected(); };
         }
@@ -290,7 +286,7 @@ namespace VidDesk.Ui
             Label eqLbl = new Label { Text = "Эквалайзер", ForeColor = Pal.Dim, Font = Pal.Small, Location = new Point(430, 118), AutoSize = true };
             props.Controls.Add(eqLbl);
             ComboBox eq = new ComboBox { Name = "eq", DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(430, 138), Width = 220, BackColor = Pal.PanelAlt, ForeColor = Pal.Text, FlatStyle = FlatStyle.Flat };
-            foreach (string preset in Native.VlcSurface.EqualizerPresetNames()) { eq.Items.Add(preset); }
+            foreach (string preset in EngineClient.DefaultEqualizerNames().Split('|')) { eq.Items.Add(preset); }
             eq.SelectedIndex = 0;
             props.Controls.Add(eq);
 
@@ -373,32 +369,19 @@ namespace VidDesk.Ui
             if (w < 2 || h < 2) { return; }
             _previewHint.Bounds = new Rectangle((_previewHost.Width - w) / 2, (int)((_previewHost.Height - h) * 0.42), w, h);
 
-            try
-            {
-                if (_preview != null && Visible && WindowState != FormWindowState.Minimized)
-                {
-                    Rectangle screen = _previewHost.RectangleToScreen(_previewHint.Bounds);
-                    _preview.SyncPosition(screen);
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace2.Write("preview layout failed: " + ex.Message);
-            }
+
         }
 
         private void StartPreview(VideoEntry entry)
         {
-            if (!_ready) { return; }
-            if (entry == null || _preview == null) { return; }
+            // Inline video preview needs the native engine, which now lives in a separate
+            // process. Instead of a second engine instance we show a captured frame.
+            if (!_ready || entry == null) { return; }
             try
             {
-                LayoutPreview();
                 _previewHint.Text = "";
-                Rectangle screen = _previewHost.RectangleToScreen(_previewHint.Bounds);
-                _preview.SyncPosition(screen);
-                _preview.Show(entry.File, this);
-                _preview.SyncPosition(screen);
+                MediaThumb.Begin(entry.File, Math.Max(160, _previewHint.Width), Math.Max(90, _previewHint.Height),
+                    bmp => { });
             }
             catch (Exception ex)
             {
@@ -415,7 +398,7 @@ namespace VidDesk.Ui
 
         private void CycleTickCore()
         {
-            if (Program.Wallpaper == null) { return; }
+            if (Program.Wallpaper == null || Program.Client == null) { return; }
             if (!Program.State.WallpaperEnabled || Program.State.CycleSeconds <= 0) { return; }
             if (!Program.Wallpaper.IsActive) { return; }
             if ((DateTime.UtcNow - _cycleStart).TotalSeconds < Program.State.CycleSeconds) { return; }
@@ -665,7 +648,7 @@ namespace VidDesk.Ui
         {
             VideoEntry e = Selected;
             if (e == null) { return; }
-            if (MessageBox.Show(this, "Убрать «" + e.Display + "» из библиотеки?", "VidDesk",
+            if (MessageBox.Show(this, "Убрать «" + e.Display + "» из библиотеки?", "Lumen",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) { return; }
             if (Program.Wallpaper != null
                 && string.Equals(e.File, Program.Wallpaper.CurrentFile, StringComparison.OrdinalIgnoreCase))
@@ -682,15 +665,16 @@ namespace VidDesk.Ui
             VideoEntry e = Selected;
             if (e == null)
             {
-                MessageBox.Show(this, "Сначала добавьте видео в библиотеку.", "VidDesk",
+                MessageBox.Show(this, "Сначала добавьте видео в библиотеку.", "Lumen",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
             if (Program.Wallpaper == null)
             {
-                MessageBox.Show(this, "Медиадвижок не загружен, обои запустить нельзя.\n"
-                    + (Program.LastError ?? "") + "\nЛог: " + Trace2.Path,
-                    "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, "Медиадвижок недоступен, обои запустить нельзя."
+                    + Environment.NewLine + (Program.LastError ?? "")
+                    + Environment.NewLine + "Лог: " + Trace2.Path,
+                    "Lumen", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
             try
@@ -703,7 +687,7 @@ namespace VidDesk.Ui
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, ex.Message, "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, ex.Message, "Lumen", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -713,9 +697,9 @@ namespace VidDesk.Ui
             string s = active
                 ? "● Обои запущены: " + Path.GetFileName(Program.Wallpaper.CurrentFile)
                 : "○ Обои остановлены";
-            _status.Text = s + "\n" + (Program.Engine == null
-                ? "Движок не загружен — см. лог"
-                : "Движок: VLC " + Native.VlcEngine.Version + " · " + AppInfo.Short + " · F5 — применить");
+            _status.Text = s + "\n" + (Program.Client == null || !Program.Client.IsRunning
+                ? "Движок не запущен — см. лог"
+                : "Движок: отдельный процесс · " + AppInfo.Short + " · F5 — применить");
             _status.ForeColor = active ? Pal.Accent : Pal.Dim;
         }
 
@@ -736,7 +720,6 @@ namespace VidDesk.Ui
             }
             else
             {
-                if (_preview != null) { _preview.Dispose(); }
                 SettingsStore.Save(Program.State);
             }
         }

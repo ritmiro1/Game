@@ -5,27 +5,26 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
-using VidDesk.Native;
-using VidDesk.Ui;
+using Lumen.Ui;
 
-namespace VidDesk
+namespace Lumen
 {
     internal static class Program
     {
         public static AppState State { get; private set; }
-        public static VlcEngine Engine { get; private set; }
+        public static EngineClient Client { get; private set; }
         public static WallpaperService Wallpaper { get; private set; }
         public static string RuntimePath { get; private set; }
         public static string LastError { get; private set; }
 
-        private const string MutexName = "Global\\VidDesk.SingleInstance.7d1c";
+        private const string MutexName = "Global\\Lumen.SingleInstance.7d1c";
 
         [STAThread]
         private static void Main(string[] args)
         {
-            if (HasFlag(args, EngineProbe.Flag))
+            if (HasFlag(args, EngineHost.Flag))
             {
-                Environment.ExitCode = EngineProbe.RunChild();
+                Environment.ExitCode = EngineHost.Run(args);
                 return;
             }
 
@@ -55,7 +54,7 @@ namespace VidDesk
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (s, e) => Fail(e.Exception, "Ошибка интерфейса");
 
-            Trace2.Step("==== VidDesk " + AppInfo.Short + " start, pid " + Process.GetCurrentProcess().Id
+            Trace2.Step("==== Lumen " + AppInfo.Short + " start, pid " + Process.GetCurrentProcess().Id
                         + ", exe " + Application.ExecutablePath
                         + ", clr " + Environment.Version
                         + ", os " + Environment.OSVersion
@@ -96,11 +95,11 @@ namespace VidDesk
             }
             catch (Exception ex)
             {
-                Fail(ex, "Не удалось запустить VidDesk");
+                Fail(ex, "Не удалось запустить Lumen");
             }
             finally
             {
-                Trace2.Step("==== VidDesk exit");
+                Trace2.Step("==== Lumen exit");
                 if (mutex != null)
                 {
                     try { mutex.ReleaseMutex(); } catch { }
@@ -155,21 +154,17 @@ namespace VidDesk
                 {
                     if (safe) { throw new InvalidOperationException("Безопасный режим: движок отключён."); }
 
-                    // Native crashes in libvlc cannot be caught in-process, so the engine is
-                    // first exercised in a child process. If it dies there, this process
-                    // survives and shows a readable error instead of vanishing.
-                    Trace2.Step("boot: probing engine in child process");
-                    if (splash != null) { splash.Report("Проверка медиадвижка…"); Application.DoEvents(); }
-                    string probeError;
-                    if (!EngineProbe.Verify(out probeError))
+                    // The engine lives in its own process: the UI never loads libvlc, so a
+                    // native crash there cannot close this window.
+                    Trace2.Step("boot: starting engine helper");
+                    if (splash != null) { splash.Report("Запуск медиадвижка…"); Application.DoEvents(); }
+                    Client = new EngineClient();
+                    Wallpaper = new WallpaperService(Client);
+                    if (!Client.Start())
                     {
-                        throw new InvalidOperationException(
-                            "Медиадвижок не запустился: " + (probeError ?? "неизвестная причина"));
+                        LastError = "Медиадвижок не запустился: " + (Client.LastError ?? "нет ответа");
+                        Trace2.Write("boot: " + LastError);
                     }
-
-                    Engine = new VlcEngine();
-                    Wallpaper = new WallpaperService(Engine);
-                    Trace2.Step("boot: vlc " + VlcEngine.Version);
                 }
                 catch (Exception ex)
                 {
@@ -196,7 +191,6 @@ namespace VidDesk
                 Trace2.Step("boot: message loop finished");
                 SettingsStore.Save(State);
                 if (Wallpaper != null) { Wallpaper.Dispose(); }
-                if (Engine != null) { Engine.Dispose(); }
             }
             catch (Exception ex)
             {
@@ -225,7 +219,7 @@ namespace VidDesk
             Action<string> line = delegate(string t) { rep.AppendLine(t); Trace2.Write("selftest: " + t); };
             try
             {
-                line("VidDesk selftest " + DateTime.Now.ToString("u"));
+                line("Lumen selftest " + DateTime.Now.ToString("u"));
                 line("exe: " + Application.ExecutablePath);
                 line("os: " + Environment.OSVersion + " / 64bit process: " + Environment.Is64BitProcess);
                 line("clr: " + Environment.Version);
@@ -240,19 +234,9 @@ namespace VidDesk
                     line("files in runtime: " + files.Length);
                 }
                 RuntimeBootstrap.RegisterNativeSearchPath(rp);
-                string probeError;
-                line("probe (child process): " + (EngineProbe.Verify(out probeError) ? "ok" : "FAILED - " + probeError));
-                try
+                using (EngineClient client = new EngineClient())
                 {
-                    line("libvlc version: " + VlcEngine.Version);
-                    using (VlcEngine eng = new VlcEngine())
-                    {
-                        line("engine created ok");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    line("ENGINE ERROR: " + ex);
+                    line("engine helper: " + (client.Start() ? "started ok" : "FAILED - " + client.LastError));
                 }
                 AppState st = SettingsStore.Load();
                 line("settings: library=" + st.Library.Count + " active=" + (st.ActiveFile ?? "<none>"));
@@ -271,12 +255,12 @@ namespace VidDesk
                 line("SELFTEST CRASH: " + ex);
             }
 
-            string path = Path.Combine(Path.GetTempPath(), "viddesk-selftest.txt");
+            string path = Path.Combine(Path.GetTempPath(), "lumen-selftest.txt");
             try { File.WriteAllText(path, rep.ToString()); } catch { }
             string body = rep.ToString();
             if (body.Length > 1400) { body = body.Substring(body.Length - 1400); }
             MessageBox.Show("Результат самопроверки:\r\n\r\n" + body + "\r\n\r\nФайл: " + path,
-                "VidDesk — самопроверка", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                "Lumen — самопроверка", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private static bool HasFlag(string[] args, string flag)
@@ -294,10 +278,10 @@ namespace VidDesk
         {
             try
             {
-                string msg = "VidDesk аварийно завершился (" + when + ")." + Environment.NewLine
+                string msg = "Lumen аварийно завершился (" + when + ")." + Environment.NewLine
                     + (ex == null ? "" : ex.Message) + Environment.NewLine + Environment.NewLine
                     + "Лог: " + Trace2.Path;
-                MessageBox.Show(msg, "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error,
+                MessageBox.Show(msg, "Lumen", MessageBoxButtons.OK, MessageBoxIcon.Error,
                     MessageBoxDefaultButton.Button1, MessageBoxOptions.DefaultDesktopOnly);
             }
             catch { }
@@ -308,13 +292,13 @@ namespace VidDesk
             try
             {
                 StringBuilder sb = new StringBuilder();
-                sb.AppendLine("VidDesk столкнулся с ошибкой.");
+                sb.AppendLine("Lumen столкнулся с ошибкой.");
                 sb.AppendLine();
                 sb.AppendLine(ex == null ? "Неизвестная ошибка." : ex.Message);
                 sb.AppendLine();
                 sb.AppendLine("Движок: " + (RuntimePath ?? RuntimeBootstrap.RuntimeDir));
                 sb.AppendLine("Лог: " + Trace2.Path);
-                MessageBox.Show(sb.ToString(), "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(sb.ToString(), "Lumen", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             catch { }
         }
@@ -331,11 +315,11 @@ namespace VidDesk
                     if (key == null) { return; }
                     if (enabled)
                     {
-                        key.SetValue("VidDesk", "\"" + Application.ExecutablePath + "\" --tray");
+                        key.SetValue("Lumen", "\"" + Application.ExecutablePath + "\" --tray");
                     }
-                    else if (key.GetValue("VidDesk") != null)
+                    else if (key.GetValue("Lumen") != null)
                     {
-                        key.DeleteValue("VidDesk", false);
+                        key.DeleteValue("Lumen", false);
                     }
                 }
             }

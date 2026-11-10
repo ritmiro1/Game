@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace VidDesk.Native
+namespace Lumen.Native
 {
     /// <summary>Win32 helpers for embedding a render surface behind desktop icons.</summary>
     internal static class DesktopHost

@@ -2,7 +2,7 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace VidDesk.Ui
+namespace Lumen.Ui
 {
     /// <summary>Dark theme primitives. All drawing is custom, no third-party controls.</summary>
     internal static class Pal

@@ -25,7 +25,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $out = dotnet build app/VidDesk/VidDesk.csproj -c Release -v minimal 2>&1 | Out-String
+          $out = dotnet build app/Lumen/Lumen.csproj -c Release -v minimal 2>&1 | Out-String
           Write-Host $out
           if ($LASTEXITCODE -ne 0) {
             try {
@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $out = "app/VidDesk/bin/Release/net48/libvlc"
+          $out = "app/Lumen/bin/Release/net48/libvlc"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           $ok = $false
           $urls = @("https://download.videolan.org/pub/videolan/vlc/3.0.20/win64/vlc-3.0.20-win64.zip")
@@ -60,7 +60,7 @@ jobs:
               Expand-Archive vlc.zip -DestinationPath vlc -Force
               $root = Get-ChildItem vlc -Directory | Select-Object -First 1
               Copy-Item "$($root.FullName)/*" $out -Recurse -Force
-              Copy-Item "$($root.FullName)/ffmpeg.exe" "app/VidDesk/bin/Release/net48/ffmpeg.exe" -Force -ErrorAction SilentlyContinue
+              Copy-Item "$($root.FullName)/ffmpeg.exe" "app/Lumen/bin/Release/net48/ffmpeg.exe" -Force -ErrorAction SilentlyContinue
               $ok = $true
             } catch { Write-Host "failed: $_" }
           }
@@ -69,7 +69,7 @@ jobs:
             choco install vlc --no-progress -y
             $src = "C:/Program Files/VideoLAN/VLC"
             Copy-Item "$src/*" $out -Recurse -Force
-            Copy-Item "$src/ffmpeg.exe" "app/VidDesk/bin/Release/net48/ffmpeg.exe" -Force -ErrorAction SilentlyContinue
+            Copy-Item "$src/ffmpeg.exe" "app/Lumen/bin/Release/net48/ffmpeg.exe" -Force -ErrorAction SilentlyContinue
           }
           if (-not (Test-Path "$out/libvlc.dll")) { throw "libvlc.dll missing" }
           $raw = Get-ChildItem $out | Measure-Object -Property Length -Sum
@@ -78,12 +78,12 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $stage = "stage/VidDesk"
+          $stage = "stage/Lumen"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item "app/VidDesk/bin/Release/net48/VidDesk.exe" $stage
-          Copy-Item "app/VidDesk/bin/Release/net48/libvlc" "$stage/libvlc" -Recurse -Force
-          if (Test-Path "app/VidDesk/bin/Release/net48/ffmpeg.exe") {
-            Copy-Item "app/VidDesk/bin/Release/net48/ffmpeg.exe" $stage
+          Copy-Item "app/Lumen/bin/Release/net48/Lumen.exe" $stage
+          Copy-Item "app/Lumen/bin/Release/net48/libvlc" "$stage/libvlc" -Recurse -Force
+          if (Test-Path "app/Lumen/bin/Release/net48/ffmpeg.exe") {
+            Copy-Item "app/Lumen/bin/Release/net48/ffmpeg.exe" $stage
           }
           Copy-Item README.md $stage
           Write-Host "portable folder staged for reference"
@@ -95,14 +95,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
-          $build = "app/VidDesk/bin/Release/net48"
+          $build = "app/Lumen/bin/Release/net48"
           # 1. bundle the media runtime
           $runtimeDir = Join-Path $build "libvlc"
-          Compress-Archive -Path "$runtimeDir/*" -DestinationPath "$build/VidDesk.runtime.zip" -CompressionLevel Optimal -Force
-          Get-ChildItem "$build/VidDesk.runtime.zip" | Format-List Name, Length
+          Compress-Archive -Path "$runtimeDir/*" -DestinationPath "$build/Lumen.rt.zip" -CompressionLevel Optimal -Force
+          Get-ChildItem "$build/Lumen.rt.zip" | Format-List Name, Length
 
           # 2. recompile with the archive embedded as a managed resource
-          $sources = Get-ChildItem -Path "app/VidDesk" -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch '\\obj\\|\\bin\\' } | ForEach-Object { $_.FullName }
+          $sources = Get-ChildItem -Path "app/Lumen" -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch '\\obj\\|\\bin\\' } | ForEach-Object { $_.FullName }
           $refs = @()
           $framework = "C:/Windows/Microsoft.NET/Framework64/v4.0.30319"
           $refs += "$framework/mscorlib.dll"
@@ -117,10 +117,10 @@ jobs:
           $refs += "$framework/System.IO.Compression.dll"
           $refs += "$framework/System.IO.Compression.FileSystem.dll"
           $refArgs = $refs | ForEach-Object { "/reference:$($_)" }
-          $resArg = "/resource:$build/VidDesk.runtime.zip,VidDesk.runtime.zip"
-          $iconArg = "/win32icon:app/VidDesk/app.ico"
+          $resArg = "/resource:$build/Lumen.rt.zip,Lumen.runtime.zip"
+          $iconArg = "/win32icon:app/Lumen/app.ico"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $cscOut = & dotnet $env:CSC_DLL /nologo /target:winexe /platform:anycpu /optimize+ /debug- /out:dist/VidDesk.exe $resArg $iconArg $refArgs $sources 2>&1 | Out-String
+          $cscOut = & dotnet $env:CSC_DLL /nologo /target:winexe /platform:anycpu /optimize+ /debug- /out:dist/Lumen.exe $resArg $iconArg $refArgs $sources 2>&1 | Out-String
           Write-Host $cscOut
           if ($LASTEXITCODE -ne 0) {
             try {
@@ -130,13 +130,13 @@ jobs:
             throw "csc failed"
           }
           Get-ChildItem dist | Format-List Name, Length
-          if (-not (Test-Path "dist/VidDesk.exe")) { throw "single-file build missing" }
+          if (-not (Test-Path "dist/Lumen.exe")) { throw "single-file build missing" }
 
       - name: Verify single-file payload
         shell: pwsh
         run: |
-          $exe = Get-Item "dist/VidDesk.exe"
-          Write-Host ("VidDesk.exe = {0:N1} MB" -f ($exe.Length / 1MB))
+          $exe = Get-Item "dist/Lumen.exe"
+          Write-Host ("Lumen.exe = {0:N1} MB" -f ($exe.Length / 1MB))
           if ($exe.Length -lt 20MB) { throw "runtime resource missing, exe too small" }
 
       - name: Publish release
@@ -145,32 +145,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $appInfo = Get-Content "app/VidDesk/AppInfo.cs" -Raw
+          $appInfo = Get-Content "app/Lumen/AppInfo.cs" -Raw
           $ver = [regex]::Match($appInfo, 'Version = "([0-9.]+)"').Groups[1].Value
           $tag = "v$ver"
           Write-Host "tag: $tag"
-          $hash = (Get-FileHash dist/VidDesk.exe -Algorithm SHA256).Hash.ToLower()
-          $size = (Get-Item dist/VidDesk.exe).Length
+          $hash = (Get-FileHash dist/Lumen.exe -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item dist/Lumen.exe).Length
           $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm") + " UTC"
-          "VidDesk $ver single-file build" | Out-File -Encoding utf8 notes.md
+          "Lumen $ver single-file build" | Out-File -Encoding utf8 notes.md
           "" | Out-File -Encoding utf8 -Append notes.md
           "- build: $stamp (run $env:GITHUB_RUN_NUMBER)" | Out-File -Encoding utf8 -Append notes.md
           "- sha256: ``$hash``" | Out-File -Encoding utf8 -Append notes.md
           "- size: $([math]::Round($size/1MB,1)) MB" | Out-File -Encoding utf8 -Append notes.md
           "" | Out-File -Encoding utf8 -Append notes.md
-          "Download VidDesk.exe and run it. The media engine (LibVLC) is embedded and is unpacked to %LOCALAPPDATA%\vlcrt on first start." | Out-File -Encoding utf8 -Append notes.md
-          "If something does not start: run ``VidDesk.exe --selftest`` and send the report." | Out-File -Encoding utf8 -Append notes.md
+          "Download Lumen.exe and run it. The media engine (LibVLC) is embedded and is unpacked to %LOCALAPPDATA%\vlcrt on first start." | Out-File -Encoding utf8 -Append notes.md
+          "If something does not start: run ``Lumen.exe --selftest`` and send the report." | Out-File -Encoding utf8 -Append notes.md
           $hash | Out-File -Encoding ascii dist/SHA256.txt
           gh release view $tag > $null 2>&1
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "VidDesk $ver" --notes-file notes.md --latest
+            gh release create $tag --title "Lumen $ver" --notes-file notes.md --latest
           } else {
             gh release edit $tag --notes-file notes.md
           }
-          gh release upload $tag dist/VidDesk.exe dist/SHA256.txt --clobber
+          gh release upload $tag dist/Lumen.exe dist/SHA256.txt --clobber
           Write-Host "uploaded $tag sha256=$hash size=$size"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VidDesk
-          path: dist/VidDesk.exe
+          name: Lumen
+          path: dist/Lumen.exe

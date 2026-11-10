@@ -7,15 +7,15 @@ using System.Reflection;
 using System.Threading;
 using System.Windows.Forms;
 
-namespace VidDesk
+namespace Lumen
 {
     /// <summary>
     /// Unpacks the media runtime that ships inside the executable and wires DLL search
-    /// paths. Keeps VidDesk a single portable EXE: no loose files next to it.
+    /// paths. Keeps Lumen a single portable EXE: no loose files next to it.
     /// </summary>
     internal static class RuntimeBootstrap
     {
-        private const string ResourceName = "VidDesk.runtime.zip";
+        private const string ResourceName = "Lumen.runtime.zip";
         private const string MarkerName = "runtime.stamp";
 
         private static string _runtimeDir;
@@ -32,8 +32,8 @@ namespace VidDesk
                 if (_runtimeDir != null) { return _runtimeDir; }
                 string[] candidates =
                 {
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "vlcrt"),
-                    Path.Combine(Path.GetTempPath(), "vlcrt"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Lumen", "rt"),
+                    Path.Combine(Path.GetTempPath(), "Lumen", "rt"),
                     Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "rt")
                 };
                 foreach (string dir in candidates)
@@ -44,22 +44,33 @@ namespace VidDesk
                         return dir;
                     }
                 }
-                _runtimeDir = Path.Combine(Path.GetTempPath(), "vlcrt");
+                _runtimeDir = Path.Combine(Path.GetTempPath(), "Lumen", "rt");
                 return _runtimeDir;
             }
         }
 
-        /// <summary>Old location used by earlier builds; removed to avoid stale DLLs.</summary>
+        /// <summary>
+        /// Removes folders left behind by earlier builds of this app so that stale
+        /// engine binaries can never be picked up.
+        /// </summary>
         public static void CleanLegacyRuntime()
         {
-            try
+            string[] stale =
             {
-                string legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VidDesk", "runtime");
-                if (Directory.Exists(legacy)) { Directory.Delete(legacy, true); }
-                string legacyTemp = Path.Combine(Path.GetTempPath(), "VidDesk", "runtime");
-                if (Directory.Exists(legacyTemp)) { Directory.Delete(legacyTemp, true); }
+                // Folders left by earlier builds: purged so stale engine DLLs are never used.
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "vlcrt"),
+                Path.Combine(Path.GetTempPath(), "vlcrt"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Lumen", "runtime"),
+                Path.Combine(Path.GetTempPath(), "Lumen", "runtime")
+            };
+            foreach (string dir in stale)
+            {
+                try
+                {
+                    if (Directory.Exists(dir)) { Directory.Delete(dir, true); }
+                }
+                catch { }
             }
-            catch { }
         }
 
         private static bool IsWritable(string dir)
@@ -120,7 +131,7 @@ namespace VidDesk
             Directory.CreateDirectory(dir);
             if (progress != null) { progress.Report("Распаковка медиадвижка…"); }
 
-            string tempZip = Path.Combine(Path.GetTempPath(), "viddesk_runtime_" + Guid.NewGuid().ToString("N") + ".zip");
+            string tempZip = Path.Combine(Path.GetTempPath(), "lumen_rt_" + Guid.NewGuid().ToString("N") + ".zip");
             using (Stream src = Assembly.GetExecutingAssembly().GetManifestResourceStream(ResourceName))
             {
                 if (src == null) { return null; }
@@ -201,7 +212,7 @@ namespace VidDesk
             {
                 Environment.SetEnvironmentVariable("VLC_PLUGIN_PATH", plugins);
             }
-            Environment.SetEnvironmentVariable("VIDDESK_RUNTIME", dir);
+            Environment.SetEnvironmentVariable("LUMEN_RUNTIME", dir);
         }
 
         public interface IProgress
@@ -226,7 +237,7 @@ namespace VidDesk
 
             Label title = new Label
             {
-                Text = "VIDDESK",
+                Text = "LUMEN",
                 Font = new Font("Segoe UI Semibold", 16f),
                 ForeColor = Ui.Pal.Text,
                 AutoSize = true,

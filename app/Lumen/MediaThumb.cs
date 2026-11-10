@@ -8,7 +8,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace VidDesk
+namespace Lumen
 {
     /// <summary>
     /// Builds small preview cards for library tiles: one frame grabbed with ffmpeg next
@@ -76,7 +76,7 @@ namespace VidDesk
             {
                 lock (Gate)
                 {
-                    string tmp = Path.Combine(Path.GetTempPath(), "viddesk_" + Guid.NewGuid().ToString("N") + ".jpg");
+                    string tmp = Path.Combine(Path.GetTempPath(), "lumen_" + Guid.NewGuid().ToString("N") + ".jpg");
                     var psi = new ProcessStartInfo(ffmpeg,
                         "-hide_banner -loglevel error -y -ss 00:00:01 -i \"" + file + "\" -frames:v 1 -vf scale=480:-2 \"" + tmp + "\"")
                     {

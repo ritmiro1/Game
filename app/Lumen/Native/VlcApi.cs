@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 
-namespace VidDesk.Native
+namespace Lumen.Native
 {
     /// <summary>
     /// Minimal hand-written libvlc loader. Only the handful of entry points this
@@ -17,7 +17,7 @@ namespace VidDesk.Native
 
         internal static string ResolveRuntimeFolder()
         {
-            string env = Environment.GetEnvironmentVariable("VIDDESK_RUNTIME");
+            string env = Environment.GetEnvironmentVariable("LUMEN_RUNTIME");
             if (!string.IsNullOrEmpty(env) && File.Exists(Path.Combine(env, "libvlc.dll")))
             {
                 return env;

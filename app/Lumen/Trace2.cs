@@ -2,7 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Text;
 
-namespace VidDesk
+namespace Lumen
 {
     /// <summary>
     /// Writes a plain-text trace next to the user profile. Used to prove how far the
@@ -15,7 +15,7 @@ namespace VidDesk
         {
             get
             {
-                string v = Environment.GetEnvironmentVariable("VIDDESK_DEBUG");
+                string v = Environment.GetEnvironmentVariable("LUMEN_DEBUG");
                 return v == "1";
             }
         }
@@ -37,9 +37,9 @@ namespace VidDesk
             try
             {
                 string dir = System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VidDesk");
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Lumen");
                 System.IO.Directory.CreateDirectory(dir);
-                return System.IO.Path.Combine(dir, "viddesk.log");
+                return System.IO.Path.Combine(dir, "lumen.log");
             }
             catch { return null; }
         }

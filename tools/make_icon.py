@@ -2,7 +2,7 @@
 """Generates app.ico (multi-resolution, PNG-compressed entries) without PIL.
 
 The mark is a rounded square with a play triangle and a horizon line: the visual
-identity of VidDesk, unrelated to any existing wallpaper product artwork.
+identity of Lumen, unrelated to any existing wallpaper product artwork.
 """
 import struct
 import zlib
@@ -101,7 +101,7 @@ def png_bytes(size):
 
 
 def main():
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app', 'VidDesk', 'app.ico')
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app', 'Lumen', 'app.ico')
     images = [(s, png_bytes(s)) for s in SIZES]
     header = struct.pack('<HHH', 0, 1, len(images))
     offset = 6 + 16 * len(images)

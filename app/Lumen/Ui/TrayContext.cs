@@ -2,7 +2,7 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace VidDesk.Ui
+namespace Lumen.Ui
 {
     /// <summary>Owns the tray icon, the main window lifetime and the desktop watcher.</summary>
     internal sealed class TrayContext : ApplicationContext
@@ -20,7 +20,7 @@ namespace VidDesk.Ui
                 _tray = new NotifyIcon
                 {
                     Icon = AppIcon.Load(),
-                    Text = "VidDesk — живые обои",
+                    Text = "Lumen — живые обои",
                     Visible = true
                 };
             }
@@ -36,7 +36,7 @@ namespace VidDesk.Ui
                 if (e.Button == MouseButtons.Left) { ShowWindow(); }
             };
 
-            menu.Items.Add("Открыть VidDesk", null, (s, e) => ShowWindow());
+            menu.Items.Add("Открыть Lumen", null, (s, e) => ShowWindow());
             menu.Items.Add("Остановить обои", null, (s, e) => { if (Program.Wallpaper != null) { Program.Wallpaper.Stop(); } });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Выход", null, (s, e) => ExitApp());
@@ -101,27 +101,26 @@ namespace VidDesk.Ui
             {
                 Trace2.Write("show window failed: " + ex);
                 MessageBox.Show(
-                    "Не удалось открыть окно VidDesk:" + Environment.NewLine + ex.Message
+                    "Не удалось открыть окно Lumen:" + Environment.NewLine + ex.Message
                     + Environment.NewLine + Environment.NewLine + "Лог: " + Trace2.Path,
-                    "VidDesk", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    "Lumen", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
         private void Watch()
         {
             if (Program.Wallpaper == null || !Program.Wallpaper.IsActive) { return; }
-            WallpaperWindow w = Program.Wallpaper.Window;
-            if (w == null || !Native.DesktopHost.WindowAlive(w.SurfaceHandle))
+            // The surface lives in the helper process: restart it if it died.
+            if (Program.Client == null) { return; }
+            if (!Program.Client.IsRunning)
             {
-                Program.Wallpaper.Stop();
+                Trace2.Write("watch: engine process gone, restarting");
                 if (Program.State.WallpaperEnabled && Program.State.Active != null)
                 {
                     try { Program.Wallpaper.Play(Program.State.Active, Program.State.SilentMode); }
-                    catch { }
+                    catch (Exception ex) { Trace2.Write("watch: restart failed -> " + ex.Message); }
                 }
-                return;
             }
-            w.UpdateBoundsToDesktop();
         }
 
         private void ExitApp()

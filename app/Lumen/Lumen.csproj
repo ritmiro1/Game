@@ -4,8 +4,8 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net48</TargetFramework>
     <LangVersion>7.3</LangVersion>
-    <AssemblyName>VidDesk</AssemblyName>
-    <RootNamespace>VidDesk</RootNamespace>
+    <AssemblyName>Lumen</AssemblyName>
+    <RootNamespace>Lumen</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
@@ -13,11 +13,11 @@
     <Deterministic>true</Deterministic>
     <DebugType>none</DebugType>
     <Optimize>true</Optimize>
-    <Company>VidDesk</Company>
-    <Product>VidDesk Live Wallpapers</Product>
-    <FileVersion>1.4.0.0</FileVersion>
-    <AssemblyVersion>1.4.0.0</AssemblyVersion>
-    <Copyright>VidDesk, 2026. Independent implementation.</Copyright>
+    <Company>Lumen</Company>
+    <Product>Lumen Live Wallpapers</Product>
+    <FileVersion>2.0.0.0</FileVersion>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <Copyright>Lumen, 2026. Independent implementation.</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

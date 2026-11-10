@@ -4,7 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace VidDesk.Native
+namespace Lumen.Native
 {
     /// <summary>
     /// Thin managed wrapper over a libvlc instance and media player. Written from
@@ -22,7 +22,7 @@ namespace VidDesk.Native
             if (_instance == IntPtr.Zero)
             {
                 throw new InvalidOperationException(
-                    "Не удалось инициализировать libvlc. Проверьте, что папка libvlc находится рядом с VidDesk.exe.");
+                    "Не удалось инициализировать libvlc. Проверьте, что папка libvlc находится рядом с Lumen.exe.");
             }
         }
 

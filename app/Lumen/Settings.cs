@@ -6,7 +6,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 
-namespace VidDesk
+namespace Lumen
 {
     [DataContract]
     internal sealed class VideoEntry
@@ -77,7 +77,7 @@ namespace VidDesk
     internal static class SettingsStore
     {
         private static readonly string Dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VidDesk");
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Lumen");
 
         private static string FilePath { get { return Path.Combine(Dir, "library.json"); } }
 

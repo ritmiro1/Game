@@ -1,9 +1,9 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
-using VidDesk.Native;
+using Lumen.Native;
 
-namespace VidDesk
+namespace Lumen
 {
     /// <summary>
     /// Borderless host window that owns the libvlc video output. Normally reparented
@@ -19,7 +19,7 @@ namespace VidDesk
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
             BackColor = Color.Black;
-            Text = "VidDesk Surface";
+            Text = "Lumen Surface";
             DoubleBuffered = true;
             if (previewMode)
             {
