@@ -31,8 +31,10 @@ jobs:
           python-version: "3.11"
       - name: Install the pinned FFmpeg package
         run: python -m pip install imageio-ffmpeg==0.8.1
-      - name: Test playback profiles
-        run: python -m unittest discover -s video-tools -p 'test_playback_profiles.py' -v
+      - name: Test playback profiles and HTTP delivery
+        run: python -m unittest discover -s video-tools -p 'test_play*.py' -v
+      - name: Test browser fallback logic
+        run: node --test video-tools/player.test.cjs
       - name: Download the verified 16K source
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,15 +51,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$RELEASE_TAG" \
-            --draft --latest=false --target "$GITHUB_SHA" \
-            --title "Копии для плавного просмотра — H.264" \
-            --notes-file "$OUTPUT_DIR/playback-notes-ru.md" \
-            "$OUTPUT_DIR/armorypass-ejoy-playback-1080p.mp4" \
-            "$OUTPUT_DIR/armorypass-ejoy-smooth-720p.mp4" \
-            "$OUTPUT_DIR/armorypass-ejoy-economy-432p.mp4" \
-            "$OUTPUT_DIR/playback-validation.json"
-          gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" --clobber \
+              "$OUTPUT_DIR/armorypass-ejoy-playback-1080p.mp4" \
+              "$OUTPUT_DIR/armorypass-ejoy-smooth-720p.mp4" \
+              "$OUTPUT_DIR/armorypass-ejoy-economy-432p.mp4" \
+              "$OUTPUT_DIR/playback-validation.json"
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft --latest=false --target "$GITHUB_SHA" \
+              --title "Копии для плавного просмотра — H.264" \
+              --notes-file "$OUTPUT_DIR/playback-notes-ru.md" \
+              "$OUTPUT_DIR/armorypass-ejoy-playback-1080p.mp4" \
+              "$OUTPUT_DIR/armorypass-ejoy-smooth-720p.mp4" \
+              "$OUTPUT_DIR/armorypass-ejoy-economy-432p.mp4" \
+              "$OUTPUT_DIR/playback-validation.json"
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest=false --notes-file "$OUTPUT_DIR/playback-notes-ru.md"
       - name: Save only the small default playback copy on the current branch
         run: |
           test "$(git branch --show-current)" = "arena/cc989019-game"
@@ -66,17 +76,20 @@ jobs:
           python - <<'PY'
           import subprocess
           from pathlib import Path
-          tracked = [p for p in subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0') if p]
-          total = sum(Path(p.decode()).stat().st_size for p in tracked if Path(p.decode()).is_file())
-          total += Path('downloads/armorypass-ejoy-smooth-720p.mp4').stat().st_size
+          tracked = {Path(p.decode()) for p in subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0') if p}
+          tracked.update({Path('downloads/armorypass-ejoy-smooth-720p.mp4'), Path('downloads/playback-validation.json')})
+          total = sum(p.stat().st_size for p in tracked if p.is_file())
           assert total < 128 * 1024 * 1024, total
           print('Tracked-file budget:', total)
           PY
           git config user.name "Video processing"
           git config user.email "video-tools@users.noreply.github.com"
           git add downloads/armorypass-ejoy-smooth-720p.mp4 downloads/playback-validation.json
-          git commit -m "Add verified lightweight H.264 playback copy"
-          git push origin arena/cc989019-game
+          if ! git diff --cached --quiet; then
+            git commit -m "Add verified lightweight H.264 playback copy"
+            git pull --rebase origin arena/cc989019-game
+            git push origin arena/cc989019-game
+          fi
       - name: Save technical logs
         if: always()
         uses: actions/upload-artifact@v4
