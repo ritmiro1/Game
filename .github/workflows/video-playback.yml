@@ -1,0 +1,89 @@
+name: Video - smooth playback copies
+
+on:
+  push:
+    branches:
+      - arena/cc989019-game
+    paths:
+      - video-tools/jobs/playback-20261110.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: video-playback-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  optimize:
+    name: Make and verify hardware-friendly playback copies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OUTPUT_DIR: /tmp/video-playback
+      RELEASE_TAG: video-playback-20261110-cc989019
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: arena/cc989019-game
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the pinned FFmpeg package
+        run: python -m pip install imageio-ffmpeg==0.8.1
+      - name: Test playback profiles
+        run: python -m unittest discover -s video-tools -p 'test_playback_profiles.py' -v
+      - name: Download the verified 16K source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$OUTPUT_DIR/input"
+          gh release download video-16k-20261110-cc989019 \
+            --pattern armorypass-ejoy-16k.mp4 --dir "$OUTPUT_DIR/input"
+      - name: Encode and validate all playback copies
+        run: |
+          python -u video-tools/optimize_playback.py \
+            --source "$OUTPUT_DIR/input/armorypass-ejoy-16k.mp4" \
+            --output-dir "$OUTPUT_DIR"
+      - name: Publish playback downloads without changing the 16K release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --draft --latest=false --target "$GITHUB_SHA" \
+            --title "Копии для плавного просмотра — H.264" \
+            --notes-file "$OUTPUT_DIR/playback-notes-ru.md" \
+            "$OUTPUT_DIR/armorypass-ejoy-playback-1080p.mp4" \
+            "$OUTPUT_DIR/armorypass-ejoy-smooth-720p.mp4" \
+            "$OUTPUT_DIR/armorypass-ejoy-economy-432p.mp4" \
+            "$OUTPUT_DIR/playback-validation.json"
+          gh release edit "$RELEASE_TAG" --draft=false --latest=false
+      - name: Save only the small default playback copy on the current branch
+        run: |
+          test "$(git branch --show-current)" = "arena/cc989019-game"
+          cp "$OUTPUT_DIR/armorypass-ejoy-smooth-720p.mp4" downloads/
+          cp "$OUTPUT_DIR/playback-validation.json" downloads/
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          tracked = [p for p in subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0') if p]
+          total = sum(Path(p.decode()).stat().st_size for p in tracked if Path(p.decode()).is_file())
+          total += Path('downloads/armorypass-ejoy-smooth-720p.mp4').stat().st_size
+          assert total < 128 * 1024 * 1024, total
+          print('Tracked-file budget:', total)
+          PY
+          git config user.name "Video processing"
+          git config user.email "video-tools@users.noreply.github.com"
+          git add downloads/armorypass-ejoy-smooth-720p.mp4 downloads/playback-validation.json
+          git commit -m "Add verified lightweight H.264 playback copy"
+          git push origin arena/cc989019-game
+      - name: Save technical logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playback-validation
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            ${{ env.OUTPUT_DIR }}/playback-validation.json
+            ${{ env.OUTPUT_DIR }}/transcode.log

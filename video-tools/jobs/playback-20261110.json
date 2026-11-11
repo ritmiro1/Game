@@ -1,0 +1,11 @@
+{
+  "revision": 1,
+  "source_release": "video-16k-20261110-cc989019",
+  "source_sha256": "a1e91b164efba3b1f7ae278b2c8158b56e560a7834be40afcc50de7c2a7356da",
+  "outputs": ["1080x1920 H.264 Main 4.0", "720x1280 H.264 Main 3.1", "432x768 H.264 Baseline 3.0"],
+  "preserve_frames": 1518,
+  "copy_original_audio": true,
+  "default_player_source": "local byte-range 720p file",
+  "keep_16k_and_4k_unchanged": true,
+  "publish": "separate GitHub playback release; only the small 720p copy in Git"
+}
