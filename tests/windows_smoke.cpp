@@ -56,6 +56,19 @@ static bool TestLibraryLayout(HWND window) {
         bool tile = false, edit = false;
         for (const auto& hit : g_hits) { if (hit.id == ID_TILE) tile = true; if (hit.id == ID_EDIT) edit = true; }
         if (!tile || !edit) ok = false;
+        // The experimental GPU option must remain reachable by scrolling on
+        // the minimum window size, including high-DPI layouts.
+        g_optHardware = true; p_gpuState = 3;
+        PaintAll(dc, S(900), S(600));
+        g_panelScroll = g_panelMaxScroll;
+        PaintAll(dc, S(900), S(600));
+        bool gpuOption = false;
+        for (const auto& hit : g_hits) if (hit.id == ID_GPU) {
+            POINT pt = {(hit.r.left+hit.r.right)/2, (hit.r.top+hit.r.bottom)/2};
+            if (HitAt(pt) == ID_GPU) gpuOption = true;
+        }
+        if (!gpuOption) ok = false;
+        g_optHardware = false; p_gpuState = 0; g_panelScroll = 0;
         g_filter = L"not-in-library"; PaintAll(dc, width, height);
         for (const auto& hit : g_hits) if (hit.id == ID_TILE) ok = false;
         SelectObject(dc, old); DeleteObject(bitmap);
@@ -64,6 +77,41 @@ static bool TestLibraryLayout(HWND window) {
     for (HFONT* f : {&g_fUI,&g_fBold,&g_fTitle,&g_fSmall,&g_fHero}) { if (*f) DeleteObject(*f); *f=nullptr; }
     DeleteDC(dc); ReleaseDC(window, screen);
     DeleteObject(g_ambientArt); g_ambientArt = nullptr;
+    return ok;
+}
+
+// Test GPU surface readback with the Windows software D3D11 driver. This is
+// not evidence that CI or the user's device has a hardware video decoder.
+static bool TestD3DReadback() {
+    Player p;
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+        &p.gpuDevice, nullptr, &p.gpuContext);
+    if (FAILED(hr)) { std::puts("D3D WARP unavailable; surface test skipped"); p.Close(); return true; }
+    using MakeSample = HRESULT (WINAPI*)(IMFSample**);
+    using MakeSurface = HRESULT (WINAPI*)(REFIID, IUnknown*, UINT, BOOL, IMFMediaBuffer**);
+    HMODULE mf = GetModuleHandleW(L"mfplat.dll");
+    auto makeSample = (MakeSample)(void*)GetProcAddress(mf, "MFCreateSample");
+    auto makeSurface = (MakeSurface)(void*)GetProcAddress(mf, "MFCreateDXGISurfaceBuffer");
+    ID3D11Texture2D* texture = nullptr; IMFSample* sample = nullptr; IMFMediaBuffer* buffer = nullptr;
+    const uint32_t source[] = {0xff010203u, 0xff102030u, 0xff506070u, 0xffa0b0c0u};
+    uint32_t output[4] = {};
+    D3D11_TEXTURE2D_DESC desc = {}; desc.Width=2; desc.Height=2; desc.MipLevels=1; desc.ArraySize=1;
+    desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count=1; desc.Usage=D3D11_USAGE_DEFAULT;
+    D3D11_SUBRESOURCE_DATA data = {}; data.pSysMem=source; data.SysMemPitch=8;
+    if (!makeSample || !makeSurface) hr=E_FAIL;
+    if (SUCCEEDED(hr)) hr=p.gpuDevice->CreateTexture2D(&desc, &data, &texture);
+    if (SUCCEEDED(hr)) hr=makeSample(&sample);
+    if (SUCCEEDED(hr)) hr=makeSurface(IID_ID3D11Texture2D, texture, 0, FALSE, &buffer);
+    if (SUCCEEDED(hr)) hr=sample->AddBuffer(buffer);
+    bool ok=false;
+    if (SUCCEEDED(hr)) {
+        p.dw=2; p.dh=2; p.bits=(BYTE*)output; p.hardwareActive=true;
+        p.CopyFrame(sample);
+        ok=p.haveFrame && !p.frameCopyFailed.load() && std::memcmp(source, output, sizeof(source))==0;
+    }
+    if (buffer) buffer->Release(); if (sample) sample->Release(); if (texture) texture->Release();
+    p.Close();
     return ok;
 }
 
@@ -82,6 +130,7 @@ int wmain(int argc, wchar_t** argv) {
     p_path = argv[1]; p_speed = 100; p_volume = 500;
     p_edit.hue = 45; p_edit.saturation = 130; p_edit.gamma = 120;
     int result = 0;
+    if (!TestD3DReadback()) { std::fprintf(stderr, "D3D11 surface readback failed\n"); result = 12; }
     if (!TestLibraryLayout(window)) { std::fprintf(stderr, "library UI layout or resource check failed\n"); result = 11; }
     {
         Player p;
@@ -139,8 +188,41 @@ int wmain(int argc, wchar_t** argv) {
         }
         p.Close();
     }
+    // Exercise opt-in device setup and a software retry when unavailable.
+    p_hardware=true;
+    {
+        Player probe;
+        if (!probe.OpenWithFallback()) { std::fprintf(stderr, "GPU opt-in/software fallback could not open video\n"); result=13; }
+        else {
+            probe.rd->SetStreamSelection(SR_AUDIO, FALSE);
+            for (int i=0; i<60 && !probe.haveFrame && !probe.frameCopyFailed.load(); ++i) {
+                DWORD stream=0, flags=0; LONGLONG ts=0; IMFSample* sample=nullptr;
+                HRESULT hr=probe.rd->ReadSample(SR_VIDEO,0,&stream,&flags,&ts,&sample);
+                if (FAILED(hr) || (flags & MF_SOURCE_READERF_ERROR)) break;
+                if (sample) { probe.CopyFrame(sample); sample->Release(); }
+                if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+            }
+            if (!probe.haveFrame && probe.hardwareActive) {
+                probe.CloseMedia(); probe.noHardware=true;
+                if (!probe.OpenWithFallback()) result=14;
+                else {
+                    probe.rd->SetStreamSelection(SR_AUDIO, FALSE);
+                    for (int i=0; i<60 && !probe.haveFrame; ++i) {
+                        DWORD stream=0, flags=0; LONGLONG ts=0; IMFSample* sample=nullptr;
+                        HRESULT hr=probe.rd->ReadSample(SR_VIDEO,0,&stream,&flags,&ts,&sample);
+                        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ERROR)) break;
+                        if (sample) { probe.CopyFrame(sample); sample->Release(); }
+                        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+                    }
+                }
+            }
+            if (!probe.haveFrame) { std::fprintf(stderr, "GPU/software frame readback failed\n"); result=15; }
+        }
+        probe.Close();
+    }
+    p_hardware=false;
     g_previewWindow=nullptr; g_wall=nullptr; DestroyWindow(window);
     fMFShutdown(); if (SUCCEEDED(co)) CoUninitialize(); DeleteCriticalSection(&g_cs);
-    if (!result) std::puts("Windows library UI layout, MF decoder, renderer, preview and PCM gain: OK");
+    if (!result) std::puts("Windows layout, D3D/WARP readback, MF decoder fallback, preview and PCM gain: OK");
     return result;
 }

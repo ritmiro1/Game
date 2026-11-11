@@ -23,6 +23,8 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
+#include <d3d11.h>
+#include <d3d10.h>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -60,7 +62,7 @@ enum : UINT {
 enum {
     ID_OPEN = 1, ID_PAUSE, ID_STOP, ID_OK, ID_REMOVE,
     ID_FIT0 = 10, ID_FIT1, ID_FIT2,
-    ID_AUTORUN = 20, ID_FSPAUSE, ID_ECOPAUSE,
+    ID_AUTORUN = 20, ID_FSPAUSE, ID_ECOPAUSE, ID_GPU,
     ID_VOL = 30, ID_SPEED, ID_EDIT,
     ID_TILE = 1000,
 };
@@ -120,6 +122,7 @@ static RECT g_volTrack = {}, g_speedTrack = {}, g_gridRc = {}, g_panelRc = {};
 static std::wstring g_filter;
 static bool g_optFsPause = true, g_optAutorun = false, g_mfOk = false;
 static bool g_optEcoPause = false, g_sessionLocked = false, g_displayOff = false, g_editorDark = true;
+static bool g_optHardware = false; // opt-in until tested on the user's GPU/driver
 static HPOWERNOTIFY g_displayNotify = nullptr;
 // GUID_CONSOLE_DISPLAY_STATE (0 = off, 1 = on, 2 = dimmed).
 static const GUID kConsoleDisplayState = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47}};
@@ -130,7 +133,9 @@ static HANDLE g_jobEvt;
 // player shared state
 static std::atomic<bool> p_quit{false}, p_userPause{false}, p_autoPause{false}, p_repaint{false};
 static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0}, p_speed{100};
-static std::atomic<bool> p_mute{false};
+static std::atomic<bool> p_mute{false}, p_hardware{false};
+// 0=off, 1=starting, 2=D3D manager enabled, 3=software fallback.
+static std::atomic<int> p_gpuState{0};
 static VideoEdit p_edit; // guarded by g_cs
 static std::atomic<HWND> g_previewWindow{nullptr};
 static std::atomic<bool> g_previewMessage{false}, g_previewFrozen{true}, g_previewRefresh{false};
@@ -264,6 +269,7 @@ static void SaveConfig() {
     std::string s = "version=1\r\n";
     s += std::string("fspause=") + (g_optFsPause ? "1" : "0") + "\r\n";
     s += std::string("ecopause=") + (g_optEcoPause ? "1" : "0") + "\r\n";
+    s += std::string("hardware=") + (g_optHardware ? "1" : "0") + "\r\n";
     s += std::string("editordark=") + (g_editorDark ? "1" : "0") + "\r\n";
     s += "active=" + (g_active >= 0 ? WToU8(g_items[(size_t)g_active].path) : std::string()) + "\r\n";
     s += "selected=" + (g_sel >= 0 ? WToU8(g_items[(size_t)g_sel].path) : std::string()) + "\r\n";
@@ -338,6 +344,7 @@ static std::wstring LoadConfig() {  // returns path of the wallpaper that was ac
         std::string key = line.substr(0, q), val = line.substr(q + 1);
         if (key == "fspause") g_optFsPause = (val != "0");
         else if (key == "ecopause") g_optEcoPause = (val != "0");
+        else if (key == "hardware") g_optHardware = (val == "1");
         else if (key == "editordark") g_editorDark = (val != "0");
         else if (key == "active") active = U8ToW(val);
         else if (key == "selected") selected = U8ToW(val);
@@ -642,6 +649,12 @@ static void PlayerFail(const wchar_t* what, HRESULT hr) {
 
 struct Player {
     IMFSourceReader* rd = nullptr;
+    ID3D11Device* gpuDevice = nullptr;
+    ID3D11DeviceContext* gpuContext = nullptr;
+    ID3D11Texture2D* gpuStaging = nullptr;
+    IMFDXGIDeviceManager* gpuManager = nullptr;
+    bool hardwareActive = false, noHardware = false;
+    std::atomic<bool> frameCopyFailed{false};
     // video
     UINT32 fw = 0, fh = 0;
     LONG stride = 0;
@@ -769,10 +782,91 @@ struct Player {
         }
         if (!hasAudio) rd->SetStreamSelection(SR_AUDIO, FALSE);
     }
+    void ReleaseHardware() {
+        if (gpuStaging) { gpuStaging->Release(); gpuStaging = nullptr; }
+        if (gpuManager) { gpuManager->Release(); gpuManager = nullptr; }
+        if (gpuContext) { gpuContext->Release(); gpuContext = nullptr; }
+        if (gpuDevice) { gpuDevice->Release(); gpuDevice = nullptr; }
+        hardwareActive = false;
+    }
+    bool SetupHardware(IMFAttributes* attributes) {
+        if (!attributes || !p_hardware.load() || noHardware) return false;
+        using MakeManager = HRESULT (WINAPI*)(UINT*, IMFDXGIDeviceManager**);
+        HMODULE mf = GetModuleHandleW(L"mfplat.dll");
+        auto makeManager = mf ? (MakeManager)(void*)GetProcAddress(mf, "MFCreateDXGIDeviceManager") : nullptr;
+        if (!makeManager) { p_gpuState = 3; PostMessageW(g_main, WM_APP_STATE, 0, 0); return false; }
+        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+            nullptr, 0, D3D11_SDK_VERSION, &gpuDevice, nullptr, &gpuContext);
+        ID3D10Multithread* multithread = nullptr;
+        if (SUCCEEDED(hr)) hr = gpuDevice->QueryInterface(IID_PPV_ARGS(&multithread));
+        if (SUCCEEDED(hr) && multithread) { multithread->SetMultithreadProtected(TRUE); multithread->Release(); }
+        UINT token = 0;
+        if (SUCCEEDED(hr)) hr = makeManager(&token, &gpuManager);
+        if (SUCCEEDED(hr)) hr = gpuManager->ResetDevice(gpuDevice, token);
+        if (SUCCEEDED(hr)) hr = attributes->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, gpuManager);
+        if (SUCCEEDED(hr)) hr = attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
+        if (FAILED(hr)) {
+            attributes->DeleteItem(MF_SOURCE_READER_D3D_MANAGER);
+            attributes->DeleteItem(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS);
+            Log(L"gpu: unavailable (0x%08X), using software", (unsigned)hr);
+            ReleaseHardware(); p_gpuState = 3; PostMessageW(g_main, WM_APP_STATE, 0, 0); return false;
+        }
+        hardwareActive = true;
+        p_gpuState = 2; PostMessageW(g_main, WM_APP_STATE, 0, 0);
+        Log(L"gpu: D3D11 manager enabled; decoder selection is controlled by Windows");
+        return true;
+    }
+    bool CopyGpuBuffer(IMFDXGIBuffer* surface) {
+        if (!surface || !gpuDevice || !gpuContext) return false;
+        ID3D11Texture2D* source = nullptr;
+        UINT index = 0;
+        HRESULT hr = surface->GetResource(IID_PPV_ARGS(&source));
+        if (SUCCEEDED(hr)) hr = surface->GetSubresourceIndex(&index);
+        if (FAILED(hr) || !source) { if (source) source->Release(); return false; }
+        D3D11_TEXTURE2D_DESC desc = {}; source->GetDesc(&desc);
+        bool supported = desc.Width >= dw && desc.Height >= dh && desc.SampleDesc.Count == 1 &&
+            (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM);
+        if (!supported) { source->Release(); return false; }
+        if (gpuStaging) {
+            D3D11_TEXTURE2D_DESC prev = {}; gpuStaging->GetDesc(&prev);
+            if (prev.Width != desc.Width || prev.Height != desc.Height || prev.Format != desc.Format) {
+                gpuStaging->Release(); gpuStaging = nullptr;
+            }
+        }
+        if (!gpuStaging) {
+            D3D11_TEXTURE2D_DESC staging = desc;
+            staging.MipLevels = 1; staging.ArraySize = 1; staging.Usage = D3D11_USAGE_STAGING;
+            staging.BindFlags = 0; staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ; staging.MiscFlags = 0;
+            hr = gpuDevice->CreateTexture2D(&staging, nullptr, &gpuStaging);
+        }
+        if (SUCCEEDED(hr) && gpuStaging) {
+            gpuContext->CopySubresourceRegion(gpuStaging, 0, 0, 0, 0, source, index, nullptr);
+            D3D11_MAPPED_SUBRESOURCE mapped = {};
+            hr = gpuContext->Map(gpuStaging, 0, D3D11_MAP_READ, 0, &mapped);
+            if (SUCCEEDED(hr)) {
+                if (mapped.RowPitch < (size_t)dw * 4) hr = E_FAIL;
+                else {
+                    GdiFlush();
+                    for (UINT32 y = 0; y < dh; ++y)
+                        memcpy(bits + (size_t)y * dw * 4, (BYTE*)mapped.pData + (size_t)y * mapped.RowPitch, (size_t)dw * 4);
+                }
+                gpuContext->Unmap(gpuStaging, 0);
+            }
+        }
+        source->Release();
+        return SUCCEEDED(hr) && gpuStaging;
+    }
     bool Open() {
+        frameCopyFailed = false;
         IMFAttributes* at = nullptr;
         fMFCreateAttributes(&at, 2);
-        if (at) at->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
+        if (at) {
+            at->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
+            SetupHardware(at);
+        } else if (p_hardware.load() && !noHardware) {
+            p_gpuState = 3; PostMessageW(g_main, WM_APP_STATE, 0, 0);
+        }
         HRESULT hr = fMFCreateReader(p_path.c_str(), at, &rd);
         if (at) at->Release();
         if (FAILED(hr) || !rd) {
@@ -838,13 +932,25 @@ struct Player {
     void CopyFrame(IMFSample* s) {
         if (!bits) return;
         IMFMediaBuffer* buf = nullptr;
-        if (FAILED(s->ConvertToContiguousBuffer(&buf)) || !buf) return;
+        DWORD count = 0;
+        if (FAILED(s->GetBufferCount(&count)) ||
+            FAILED(count == 1 ? s->GetBufferByIndex(0, &buf) : s->ConvertToContiguousBuffer(&buf)) || !buf) {
+            if (hardwareActive) frameCopyFailed = true;
+            return;
+        }
         const size_t row = (size_t)dw * 4;
         IMF2DBuffer* b2 = nullptr;
         BYTE* p = nullptr;
         LONG pitch = 0;
         bool done = false;
-        if (SUCCEEDED(buf->QueryInterface(IID_PPV_ARGS(&b2))) && b2) {
+        IMFDXGIBuffer* gpuBuffer = nullptr;
+        if (hardwareActive && SUCCEEDED(buf->QueryInterface(IID_PPV_ARGS(&gpuBuffer))) && gpuBuffer) {
+            done = CopyGpuBuffer(gpuBuffer);
+            gpuBuffer->Release();
+            // Do not treat an unsupported GPU surface as readable CPU memory.
+            if (!done) { buf->Release(); frameCopyFailed = true; return; }
+        }
+        if (!done && SUCCEEDED(buf->QueryInterface(IID_PPV_ARGS(&b2))) && b2) {
             if (SUCCEEDED(b2->Lock2D(&p, &pitch)) && p) {
                 if ((size_t)std::abs(pitch) >= row) {
                     GdiFlush();
@@ -870,9 +976,11 @@ struct Player {
                     for (UINT32 y = 0; y < rows; y++) memcpy(bits + y * row, d + (size_t)(rows - 1 - y) * ast, row);
                 }
                 buf->Unlock();
+                done = rows == dh;
             }
         }
         buf->Release();
+        if (!done) { if (hardwareActive) frameCopyFailed = true; return; }
         VideoEdit current;
         EnterCriticalSection(&g_cs); current = p_edit; LeaveCriticalSection(&g_cs);
         bool previewNeedsFrame = g_previewWindow.load() && (!g_previewFrozen.load() || g_previewRefresh.load());
@@ -1107,6 +1215,7 @@ struct Player {
     void CloseMedia() {
         out.Close();
         if (rd) { rd->Release(); rd = nullptr; }
+        ReleaseHardware();
     }
     void Close() {
         CloseMedia();
@@ -1120,17 +1229,29 @@ struct Player {
         bits = nullptr;
     }
 
+    bool OpenWithFallback() {
+        if (Open()) return true;
+        bool retrySoftware = hardwareActive && !noHardware;
+        CloseMedia();
+        if (!retrySoftware) return false;
+        noHardware = true; p_gpuState = 3; PostMessageW(g_main, WM_APP_STATE, 0, 0);
+        Log(L"gpu: opening failed; retrying with software decoding");
+        EnterCriticalSection(&g_cs); p_err.clear(); LeaveCriticalSection(&g_cs);
+        return Open();
+    }
     enum { R_QUIT, R_FAIL, R_REOPEN };
     void Run() {
         bool retried = false;
         for (;;) {
-            if (!Open()) return;
+            if (!OpenWithFallback()) return;
             HRESULT hr = S_OK;
             StartRenderer();
             int r = Play(hr);
             StopRenderer();
             if (r == R_QUIT) return;
+            bool retrySoftware = hardwareActive && !noHardware && (r == R_FAIL || frameCopyFailed.load());
             CloseMedia();
+            if (retrySoftware) { noHardware = true; p_gpuState = 3; PostMessageW(g_main, WM_APP_STATE, 0, 0); Log(L"gpu: playback failed; retrying with software decoding"); continue; }
             if (r == R_REOPEN) continue;
             if (shown == 0 && !noScale && !retried) {  // maybe the scaler is the problem: decode at native size
                 retried = true;
@@ -1163,6 +1284,7 @@ struct Player {
         hr = S_OK;
 
         while (!p_quit.load()) {
+            if (hardwareActive && frameCopyFailed.load()) { result = R_REOPEN; break; }
             int layout = p_layoutGen.load();
             if (requestedLayout != layout) {
                 requestedLayout = layout;
@@ -1418,6 +1540,7 @@ static bool StartWallpaper(int idx) {
     p_volume = g_items[(size_t)idx].volume;
     p_fit = g_items[(size_t)idx].fit;
     p_speed = g_items[(size_t)idx].speed;
+    p_hardware = g_optHardware; p_gpuState = g_optHardware ? 1 : 0;
     EnterCriticalSection(&g_cs); p_edit = g_items[(size_t)idx].edit; LeaveCriticalSection(&g_cs);
     p_userPause = false;
     p_thread = CreateThread(nullptr, 0, PlayerThread, nullptr, 0, nullptr);
@@ -2445,7 +2568,17 @@ static void PaintAll(HDC dc, int W, int H) {
     Checkbox(dc, px, y, pw, ID_FSPAUSE, L"Пауза: полное или развёрнутое окно", g_optFsPause);
     y += S(26);
     Checkbox(dc, px, y, pw, ID_ECOPAUSE, L"Пауза: батарея / блокировка / экран", g_optEcoPause);
-    y += S(28);
+    y += S(26);
+    Checkbox(dc, px, y, pw, ID_GPU, L"GPU-декодирование (эксперимент)", g_optHardware);
+    y += S(26);
+    if (g_optHardware && g_active >= 0) {
+        int state = p_gpuState.load();
+        const wchar_t* text = state == 2 ? L"D3D включён; декодер выбирает Windows" :
+                              state == 3 ? L"GPU недоступен: программный режим" : L"Подготовка GPU…";
+        RECT hint = {px + S(27), y, px + pw, y + S(32)};
+        Txt(dc, text, hint, g_fSmall, state == 3 ? C_WARN : C_DIM, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        y += S(32);
+    } else y += S(2);
     g_panelMaxScroll = std::max(0, y + g_panelScroll - (int)rp.bottom + S(8));
     if (g_panelScroll > g_panelMaxScroll) { g_panelScroll = g_panelMaxScroll; InvalidateRect(g_main, &rp, FALSE); }
     RestoreDC(dc, panelDC);
@@ -2506,7 +2639,7 @@ static int HitAt(POINT pt) {
         int id = g_hits[i].id;
         if ((id == ID_VOL || id == ID_SPEED || id == ID_EDIT ||
              id == ID_REMOVE || (id >= ID_FIT0 && id <= ID_FIT2) ||
-             id == ID_AUTORUN || id == ID_FSPAUSE || id == ID_ECOPAUSE) && !PtInRect(&g_panelRc, pt)) continue;
+             id == ID_AUTORUN || id == ID_FSPAUSE || id == ID_ECOPAUSE || id == ID_GPU) && !PtInRect(&g_panelRc, pt)) continue;
         if (PtInRect(&g_hits[i].r, pt)) return id;
     }
     return 0;
@@ -2644,6 +2777,12 @@ static void Command(HWND h, int id) {
         g_optAutorun = !g_optAutorun;
         AutorunSet(g_optAutorun);
         g_optAutorun = AutorunGet();
+        InvalidateRect(h, nullptr, FALSE);
+        break;
+    case ID_GPU:
+        g_optHardware = !g_optHardware;
+        SaveConfig();
+        if (g_active >= 0) StartWallpaper(g_active);
         InvalidateRect(h, nullptr, FALSE);
         break;
     case ID_ECOPAUSE:
