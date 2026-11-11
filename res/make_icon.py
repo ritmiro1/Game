@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
-"""Generates res/app.ico (original artwork: blue rounded square with a white play triangle)."""
+"""Generate the original LoopDesk ribbon icon at multiple Windows sizes."""
 import os
 import struct
 import zlib
 
 
 def pixel(u, v):
-    """Colour (r, g, b, a) at normalised coordinates u, v in [0, 1]."""
-    rad = 0.22
-    dx = max(rad - u, 0.0, u - (1.0 - rad))
-    dy = max(rad - v, 0.0, v - (1.0 - rad))
-    if dx * dx + dy * dy > rad * rad:
+    """Original LoopDesk mark: a luminous, continuous ribbon in a midnight tile."""
+    import math
+    rad = 0.24
+    dx = max(rad-u, 0.0, u-(1.0-rad))
+    dy = max(rad-v, 0.0, v-(1.0-rad))
+    if dx*dx + dy*dy > rad*rad:
         return (0, 0, 0, 0)
-    # white play triangle
-    ax, ay, bx, by, cx, cy = 0.37, 0.27, 0.37, 0.73, 0.77, 0.50
-    d1 = (u - bx) * (ay - by) - (ax - bx) * (v - by)
-    d2 = (u - cx) * (by - cy) - (bx - cx) * (v - cy)
-    d3 = (u - ax) * (cy - ay) - (cx - ax) * (v - ay)
-    neg = d1 < 0 or d2 < 0 or d3 < 0
-    pos = d1 > 0 or d2 > 0 or d3 > 0
-    if not (neg and pos):
-        return (255, 255, 255, 255)
-    t = v
-    return (int(64 - 28 * t), int(150 - 44 * t), int(245 - 30 * t), 255)
+    # Two intersecting, tilted orbits and a small point of light.
+    x, y = u-0.5, v-0.5
+    c, sn = 0.8660254, 0.5
+    rx, ry = c*x + sn*y, -sn*x + c*y
+    sx, sy = c*x - sn*y, sn*x + c*y
+    ring1 = abs(math.sqrt((rx/0.34)**2 + (ry/0.20)**2)-1.0)
+    ring2 = abs(math.sqrt((sx/0.34)**2 + (sy/0.20)**2)-1.0)
+    if (u-0.73)**2 + (v-0.31)**2 < 0.033**2:
+        return (229, 255, 251, 255)
+    if ring1 < 0.075:
+        return (161, 239, 229, 255)
+    if ring2 < 0.075:
+        return (142, 167, 246, 255)
+    t = max(0.0,min(1.0,0.22 + v*0.56 + u*0.20))
+    return (int(17+13*t), int(26+24*t), int(49+49*t), 255)
 
 
 def render(size, ss=4):

@@ -67,12 +67,12 @@ enum {
 enum { IC_NONE, IC_PLUS, IC_PLAY, IC_PAUSE, IC_STOP };
 enum { MENU_SHOW = 1, MENU_PAUSE, MENU_STOP, MENU_EXIT };
 
-static const COLORREF C_BG = RGB(27, 31, 38), C_TOP = RGB(19, 22, 28), C_PANEL = RGB(33, 38, 47),
-                      C_TILE = RGB(44, 50, 61), C_CAP = RGB(16, 19, 24), C_LINE = RGB(55, 62, 76),
-                      C_TEXT = RGB(233, 237, 242), C_DIM = RGB(139, 149, 165), C_ACC = RGB(46, 128, 230),
-                      C_ACC_H = RGB(72, 150, 245), C_BTN = RGB(48, 55, 68), C_BTN_H = RGB(62, 71, 87),
-                      C_BOOST = RGB(240, 150, 50), C_TRACK = RGB(58, 66, 80), C_INPUT = RGB(40, 46, 57),
-                      C_WARN = RGB(245, 170, 80);
+static const COLORREF C_BG = RGB(12, 17, 28), C_TOP = RGB(14, 19, 31), C_PANEL = RGB(18, 25, 39),
+                      C_TILE = RGB(27, 36, 54), C_CAP = RGB(24, 32, 48), C_LINE = RGB(46, 58, 78),
+                      C_TEXT = RGB(238, 242, 251), C_DIM = RGB(167, 180, 201), C_ACC = RGB(63, 90, 189),
+                      C_ACC_H = RGB(82, 111, 211), C_BTN = RGB(34, 44, 63), C_BTN_H = RGB(46, 59, 82),
+                      C_BOOST = RGB(245, 183, 112), C_TRACK = RGB(64, 78, 101), C_INPUT = RGB(25, 34, 50),
+                      C_WARN = RGB(255, 194, 126), C_MINT = RGB(130, 222, 214);
 
 // ------------------------------------------------------------------ data
 struct Item {
@@ -104,9 +104,10 @@ static HWND g_progman = nullptr;
 static bool g_raised = false;
 static UINT g_dpi = 96;
 static CRITICAL_SECTION g_cs;
-static HFONT g_fUI, g_fBold, g_fTitle, g_fSmall;
+static HFONT g_fUI, g_fBold, g_fTitle, g_fSmall, g_fHero;
 static HBRUSH g_brInput;
 static HICON g_icon, g_iconSm;
+static HBITMAP g_ambientArt = nullptr;
 static UINT g_msgTaskbar = 0;
 
 static std::vector<Item> g_items;
@@ -1648,6 +1649,25 @@ static void DrawThumb(HDC dc, const RECT& r, const Item& it) {
     SelectObject(m, o);
     DeleteDC(m);
 }
+// Cover-fit the embedded artwork inside the empty-library card.
+static void DrawAmbientArt(HDC dc, const RECT& r) {
+    if (!g_ambientArt) { Round(dc, r, S(14), C_TILE, C_LINE); return; }
+    BITMAP bm = {};
+    if (!GetObjectW(g_ambientArt, sizeof(bm), &bm) || bm.bmWidth <= 0 || bm.bmHeight <= 0) return;
+    int width = r.right-r.left, height = r.bottom-r.top;
+    if (width <= 0 || height <= 0) return;
+    double scale = std::max(width / (double)bm.bmWidth, height / (double)bm.bmHeight);
+    int sw = std::min((int)bm.bmWidth, (int)(width / scale + .5));
+    int sh = std::min((int)bm.bmHeight, (int)(height / scale + .5));
+    HDC src = CreateCompatibleDC(dc); if (!src) return;
+    HGDIOBJ old = SelectObject(src, g_ambientArt);
+    int saved = SaveDC(dc);
+    HRGN clip = CreateRoundRectRgn(r.left, r.top, r.right, r.bottom, S(14), S(14));
+    if (clip) { ExtSelectClipRgn(dc, clip, RGN_AND); DeleteObject(clip); }
+    SetStretchBltMode(dc, COLORONCOLOR);
+    StretchBlt(dc, r.left, r.top, width, height, src, (bm.bmWidth-sw)/2, (bm.bmHeight-sh)/2, sw, sh, SRCCOPY);
+    RestoreDC(dc, saved); SelectObject(src, old); DeleteDC(src);
+}
 static std::wstring MetaText(const Item& it) {
     std::wstring s;
     wchar_t b[96];
@@ -2155,7 +2175,7 @@ static void OpenEditor() {
 // ------------------------------------------------------------------ main window painting
 static void PaintAll(HDC dc, int W, int H) {
     g_hits.clear();
-    const int topH = S(52), toolH = S(50), botH = S(60), panW = S(312);
+    const int topH = S(64), toolH = S(64), botH = S(68), panW = S(312);
     RECT rAll = {0, 0, W, H};
     Fill(dc, rAll, C_BG);
 
@@ -2165,9 +2185,10 @@ static void PaintAll(HDC dc, int W, int H) {
     std::vector<int> vis;
     for (int i = 0; i < (int)g_items.size(); i++)
         if (ContainsNoCase(g_items[(size_t)i].name, g_filter)) vis.push_back(i);
-    const int gap = S(12), gw = (int)(rg.right - rg.left) - S(8);
+    const int gap = S(16), gw = (int)(rg.right - rg.left) - S(8);
     const int cols = std::max(1, (gw - gap) / (S(190) + gap));
-    const int tw = std::max(S(60), (gw - gap * (cols + 1)) / cols), th = tw * 9 / 16;
+    const int tw = std::max(S(60), (gw - gap * (cols + 1)) / cols), imageH = tw * 9 / 16;
+    const int th = imageH + S(44);
     const int rows = ((int)vis.size() + cols - 1) / cols;
     const int contentH = rows * (th + gap) + gap, viewH = (int)(rg.bottom - rg.top);
     g_maxScroll = std::max(0, contentH - viewH);
@@ -2175,15 +2196,32 @@ static void PaintAll(HDC dc, int W, int H) {
     int saved = SaveDC(dc);
     IntersectClipRect(dc, rg.left, rg.top, rg.right, rg.bottom);
     if (vis.empty()) {
-        RECT a = rg;
-        a.bottom = (rg.top + rg.bottom) / 2;
-        Txt(dc, g_items.empty() ? L"Здесь пока пусто" : L"Ничего не найдено", a, g_fTitle, C_TEXT,
-            DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
-        RECT b = rg;
-        b.top = a.bottom + S(8);
-        if (g_items.empty())
-            Txt(dc, L"Перетащите сюда MP4-файл или нажмите «Открыть файл»", b, g_fUI, C_DIM,
-                DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        if (g_items.empty()) {
+            const int inset = S(16);
+            RECT hero = {rg.left + inset, rg.top + inset, rg.right - inset - S(8),
+                         std::min((int)rg.bottom - inset, (int)rg.top + S(320))};
+            if (hero.right > hero.left && hero.bottom > hero.top) {
+                // The artwork is a self-contained resource, not a network request.
+                DrawAmbientArt(dc, hero);
+                RECT kicker = {hero.left + S(24), hero.top + S(20), hero.right - S(24), hero.top + S(40)};
+                Txt(dc, L"ПРОСТРАНСТВО ДЛЯ ВДОХНОВЕНИЯ", kicker, g_fSmall, C_MINT);
+                RECT title = {hero.left + S(24), hero.top + S(45), hero.right - S(24), hero.top + S(93)};
+                Txt(dc, L"Оживите рабочий стол", title, g_fHero, C_TEXT);
+                RECT sub = {hero.left + S(24), hero.top + S(93), hero.right - S(24), hero.top + S(120)};
+                Txt(dc, L"Любимое видео — теперь часть вашего пространства.", sub, g_fUI, C_DIM);
+                RECT add = {hero.left + S(24), hero.top + S(132), hero.left + S(200), hero.top + S(170)};
+                if (add.bottom < hero.bottom) Button(dc, add, ID_OPEN, L"Добавить видео", IC_PLUS, true);
+                Frame(dc, hero, 1, C_LINE);
+            }
+            RECT hint = {rg.left + S(20), hero.bottom + S(10), rg.right - S(20), hero.bottom + S(38)};
+            Txt(dc, L"Или перетащите видеофайл в это окно", hint, g_fSmall, C_DIM, DT_CENTER | DT_ONE);
+        } else {
+            RECT a = rg; a.bottom = (rg.top + rg.bottom) / 2;
+            Txt(dc, L"Ничего не найдено", a, g_fTitle, C_TEXT,
+                DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
+            RECT b = rg; b.top = a.bottom + S(8);
+            Txt(dc, L"Попробуйте изменить запрос", b, g_fUI, C_DIM, DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
     }
     for (size_t k = 0; k < vis.size(); k++) {
         const int i = vis[k];
@@ -2194,19 +2232,24 @@ static void PaintAll(HDC dc, int W, int H) {
         t.right = t.left + tw;
         t.bottom = t.top + th;
         if (t.bottom < rg.top || t.top > rg.bottom) continue;
-        DrawThumb(dc, t, it);
-        RECT cap = {t.left, t.bottom - S(24), t.right, t.bottom};
-        Fill(dc, cap, C_CAP);
-        RECT ct = {cap.left + S(8), cap.top, cap.right - S(8), cap.bottom};
-        Txt(dc, it.name, ct, g_fSmall, C_TEXT);
+        Round(dc, t, S(12), C_CAP, i == g_sel ? C_ACC_H : (g_hot == ID_TILE + i ? C_DIM : C_LINE));
+        RECT image = {t.left + S(2), t.top + S(2), t.right - S(2), t.top + imageH};
+        // Clip the image to the rounded card; captions remain readable below it.
+        int cardDC = SaveDC(dc);
+        HRGN clip = CreateRoundRectRgn(t.left + 1, t.top + 1, t.right - 1, t.bottom - 1, S(12), S(12));
+        if (clip) { ExtSelectClipRgn(dc, clip, RGN_AND); DeleteObject(clip); }
+        DrawThumb(dc, image, it);
+        RestoreDC(dc, cardDC);
+        RECT ct = {t.left + S(12), image.bottom + S(2), t.right - S(12), t.bottom - S(2)};
+        Txt(dc, it.name, ct, g_fBold, C_TEXT);
         if (i == g_active) {
-            RECT bd = {t.left + S(6), t.top + S(6), t.left + S(28), t.top + S(28)};
-            Round(dc, bd, S(6), C_ACC, C_ACC);
-            Icon(dc, p_userPause.load() ? IC_PAUSE : IC_PLAY, (bd.left + bd.right) / 2, (bd.top + bd.bottom) / 2, S(5),
-                 RGB(255, 255, 255));
+            RECT bd = {t.left + S(9), t.top + S(9), t.left + S(98), t.top + S(32)};
+            Round(dc, bd, S(10), C_TOP, C_LINE);
+            Icon(dc, p_userPause.load() ? IC_PAUSE : IC_PLAY, bd.left + S(12), (bd.top + bd.bottom) / 2, S(4), C_MINT);
+            RECT badgeText = {bd.left + S(23), bd.top, bd.right - S(4), bd.bottom};
+            Txt(dc, p_userPause.load() ? L"ПАУЗА" : L"АКТИВНО", badgeText, g_fSmall, C_TEXT);
         }
-        if (i == g_sel) Frame(dc, t, std::max(2, S(2)), C_ACC);
-        else if (g_hot == ID_TILE + i) Frame(dc, t, 1, C_DIM);
+        if (i == g_sel) Frame(dc, t, std::max(1, S(1)), C_ACC_H);
         RECT hr;
         if (IntersectRect(&hr, &t, &rg)) g_hits.push_back({hr, ID_TILE + i});
     }
@@ -2221,14 +2264,15 @@ static void PaintAll(HDC dc, int W, int H) {
     // ----- top bar
     RECT rt = {0, 0, W, topH};
     Fill(dc, rt, C_TOP);
-    RECT lg = {S(16), S(14), S(40), S(38)};
-    Round(dc, lg, S(8), C_ACC, C_ACC);
-    Icon(dc, IC_PLAY, (lg.left + lg.right) / 2, (lg.top + lg.bottom) / 2, S(6), RGB(255, 255, 255));
-    RECT rn = {S(50), 0, S(160), topH};
+    RECT topLine = {0, topH - 1, W, topH}; Fill(dc, topLine, C_LINE);
+    RECT lg = {S(20), S(18), S(48), S(46)};
+    if (g_icon) DrawIconEx(dc, lg.left, lg.top, g_icon, lg.right-lg.left, lg.bottom-lg.top, 0, nullptr, DI_NORMAL);
+    else { Round(dc, lg, S(8), C_ACC, C_ACC); Icon(dc, IC_PLAY, (lg.left + lg.right)/2, (lg.top + lg.bottom)/2, S(6), C_TEXT); }
+    RECT rn = {S(59), 0, S(168), topH};
     Txt(dc, APP_NAME, rn, g_fTitle, C_TEXT);
-    RECT tab = {S(170), 0, S(290), topH};
-    Txt(dc, L"Установлено", tab, g_fBold, C_TEXT, DT_CENTER | DT_ONE);
-    RECT ul = {tab.left + S(8), topH - S(3), tab.right - S(8), topH};
+    RECT tab = {S(188), 0, S(302), topH};
+    Txt(dc, L"Коллекция", tab, g_fBold, C_TEXT, DT_CENTER | DT_ONE);
+    RECT ul = {tab.left + S(20), topH - S(3), tab.right - S(20), topH};
     Fill(dc, ul, C_ACC);
     {
         std::wstring err;
@@ -2246,18 +2290,18 @@ static void PaintAll(HDC dc, int W, int H) {
             if (p_mute.load()) st += L" (без звука)";
             sc = C_TEXT;
         } else st = L"Обои не установлены";
-        RECT rs = {S(310), 0, W - S(16), topH};
+        RECT rs = {S(325), 0, W - S(20), topH};
         Txt(dc, st, rs, g_fUI, sc, DT_RIGHT | DT_ONE);
     }
 
     // ----- search row
     RECT rtool = {0, topH, W - panW, topH + toolH};
     Fill(dc, rtool, C_BG);
-    RECT sbx = {S(12), topH + S(10), S(12) + S(280), topH + S(42)};
+    RECT sbx = {S(16), topH + S(14), S(16) + S(280), topH + S(50)};
     Round(dc, sbx, S(8), C_INPUT, C_LINE);
     {
         wchar_t b[64];
-        _snwprintf(b, 63, L"Обоев: %d", (int)g_items.size());
+        _snwprintf(b, 63, L"В КОЛЛЕКЦИИ: %d", (int)g_items.size());
         b[63] = 0;
         RECT rc = {sbx.right + S(14), topH, W - panW - S(12), topH + toolH};
         Txt(dc, b, rc, g_fUI, C_DIM);
@@ -2272,12 +2316,15 @@ static void PaintAll(HDC dc, int W, int H) {
     const int px = W - panW + S(16), pw = panW - S(32);
     int panelDC = SaveDC(dc);
     IntersectClipRect(dc, rp.left, rp.top, rp.right, rp.bottom);
-    int y = topH + S(12) - g_panelScroll;
+    int y = topH + S(14) - g_panelScroll;
+    RECT section = {px, y, px + pw, y + S(20)};
+    Txt(dc, L"ПАРАМЕТРЫ ОБОЕВ", section, g_fSmall, C_DIM);
+    y += S(26);
     g_volTrack = RECT{}; g_speedTrack = RECT{};
     if (g_sel >= 0 && g_sel < (int)g_items.size()) {
         Item& it = g_items[(size_t)g_sel];
         // the preview takes whatever height is left after the fixed-size controls below it
-        const int ph = std::clamp((H - botH) - (topH + S(12)) - S(416), S(64), pw * 9 / 16);
+        const int ph = std::clamp((H - botH) - (topH + S(14)) - S(442), S(64), pw * 9 / 16);
         RECT pv = {px, y, px + pw, y + ph};
         DrawThumb(dc, pv, it);
         Frame(dc, pv, 1, C_LINE);
@@ -2413,11 +2460,11 @@ static void PaintAll(HDC dc, int W, int H) {
     Fill(dc, rbm, C_TOP);
     RECT bl = {0, H - botH, W, H - botH + 1};
     Fill(dc, bl, C_LINE);
-    const int by = H - botH + S(13), bh = S(34);
+    const int by = H - botH + S(15), bh = S(38);
     const bool act = g_active >= 0;
     int x = S(12);
     RECT b1 = {x, by, x + S(160), by + bh};
-    Button(dc, b1, ID_OPEN, L"Открыть файл", IC_PLUS, false);
+    Button(dc, b1, ID_OPEN, L"Открыть файл", IC_PLUS, true);
     x += S(172);
     RECT b2 = {x, by, x + S(150), by + bh};
     Button(dc, b2, ID_PAUSE, p_userPause.load() ? L"Продолжить" : L"Пауза", p_userPause.load() ? IC_PLAY : IC_PAUSE,
@@ -2426,12 +2473,12 @@ static void PaintAll(HDC dc, int W, int H) {
     RECT b3 = {x, by, x + S(150), by + bh};
     Button(dc, b3, ID_STOP, L"Остановить", IC_STOP, false, act);
     RECT b4 = {W - S(12) - S(120), by, W - S(12), by + bh};
-    Button(dc, b4, ID_OK, L"OK", IC_NONE, true);
+    Button(dc, b4, ID_OK, L"В трей", IC_NONE, false);
 }
 
 // ------------------------------------------------------------------ main window logic
 static void MakeFonts() {
-    for (HFONT* f : {&g_fUI, &g_fBold, &g_fTitle, &g_fSmall})
+    for (HFONT* f : {&g_fUI, &g_fBold, &g_fTitle, &g_fSmall, &g_fHero})
         if (*f) { DeleteObject(*f); *f = nullptr; }
     auto mk = [](int pt10, int weight) {
         LOGFONTW lf = {};
@@ -2446,12 +2493,13 @@ static void MakeFonts() {
     g_fBold = mk(95, FW_SEMIBOLD);
     g_fTitle = mk(125, FW_SEMIBOLD);
     g_fSmall = mk(85, FW_NORMAL);
+    g_fHero = mk(185, FW_SEMIBOLD);
     if (g_edit) SendMessageW(g_edit, WM_SETFONT, (WPARAM)g_fUI, TRUE);
 }
 static void PlaceEdit() {
     if (!g_edit) return;
-    const int topH = S(52);
-    MoveWindow(g_edit, S(12) + S(12), topH + S(10) + S(6), S(280) - S(24), S(20), TRUE);
+    const int topH = S(64);
+    MoveWindow(g_edit, S(28), topH + S(22), S(256), S(20), TRUE);
 }
 static int HitAt(POINT pt) {
     for (size_t i = g_hits.size(); i-- > 0;) {
@@ -2636,7 +2684,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         g_edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 10, 10, h,
                                  (HMENU)(INT_PTR)100, g_hi, nullptr);
         MakeFonts();
-        SendMessageW(g_edit, EM_SETCUEBANNER, TRUE, (LPARAM)L"Поиск");
+        SendMessageW(g_edit, EM_SETCUEBANNER, TRUE, (LPARAM)L"Поиск в коллекции · Ctrl+F");
         PlaceEdit();
         DragAcceptFiles(h, TRUE);
         BOOL dark = TRUE;
@@ -2787,6 +2835,11 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             Item& it = g_items[(size_t)g_sel];
             it.speed = std::clamp(it.speed + (wp == VK_RIGHT ? 1 : -1), 15, 200);
             if (g_sel == g_active) p_speed = it.speed;
+            SaveConfig(); InvalidateRect(h, nullptr, FALSE);
+        } else if ((wp == VK_LEFT || wp == VK_RIGHT) && g_sel >= 0 && g_sel < (int)g_items.size() && g_lastControl == ID_VOL) {
+            Item& it = g_items[(size_t)g_sel];
+            it.volume = std::clamp(it.volume + (wp == VK_RIGHT ? 5 : -5), 0, 500);
+            if (g_sel == g_active) p_volume = it.volume;
             SaveConfig(); InvalidateRect(h, nullptr, FALSE);
         } else if (wp == VK_DELETE && g_sel >= 0) RemoveItem(g_sel);
         else if (wp == VK_SPACE) TogglePause();
@@ -2948,6 +3001,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
     Log(L"---- LoopDesk start, mf=%d", (int)g_mfOk);
     g_jobEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_msgTaskbar = RegisterWindowMessageW(L"TaskbarCreated");
+    g_ambientArt = (HBITMAP)LoadImageW(hi, MAKEINTRESOURCEW(2), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
     g_icon = LoadIconW(hi, MAKEINTRESOURCEW(1));
     if (!g_icon) g_icon = LoadIconW(nullptr, IDI_APPLICATION);
     g_iconSm = (HICON)LoadImageW(hi, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
@@ -3011,9 +3065,17 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
     }
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        // Local shortcuts work even when the search edit has keyboard focus,
+        // without intercepting keystrokes in the separate editor window.
+        if (msg.message == WM_KEYDOWN && GetAncestor(msg.hwnd, GA_ROOT) == g_main &&
+            (GetKeyState(VK_CONTROL) & 0x8000)) {
+            if (msg.wParam == 'F') { SetFocus(g_edit); SendMessageW(g_edit, EM_SETSEL, 0, -1); continue; }
+            if (msg.wParam == 'O') { Command(g_main, ID_OPEN); continue; }
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (g_ambientArt) { DeleteObject(g_ambientArt); g_ambientArt = nullptr; }
     if (g_mfOk && !g_abandonedPlayer) fMFShutdown();
     CoUninitialize();
     if (mtx) CloseHandle(mtx);
