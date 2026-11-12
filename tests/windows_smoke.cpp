@@ -1,5 +1,6 @@
 // Real Windows/Media Foundation integration smoke test, with an isolated test
 // window (never attaches to Explorer or changes the user's wallpaper).
+#define LOOPDESK_TESTING 1
 #define WinMain LoopDeskGuiEntry
 #include "../src/main.cpp"
 #include <cstdio>
@@ -56,6 +57,18 @@ static bool TestLibraryLayout(HWND window) {
         bool tile = false, edit = false;
         for (const auto& hit : g_hits) { if (hit.id == ID_TILE) tile = true; if (hit.id == ID_EDIT) edit = true; }
         if (!tile || !edit) ok = false;
+        // Favorites filter and alphabetic ordering must not alter item indices.
+        Item other; other.name=L"Альфа"; g_items.push_back(other);
+        g_items[0].favorite=true; g_favoritesOnly=true;
+        PaintAll(dc, width, height);
+        bool favVisible=false, otherVisible=false;
+        for (const auto& hit : g_hits) { if (hit.id==ID_TILE) favVisible=true; if (hit.id==ID_TILE+1) otherVisible=true; }
+        if (!favVisible || otherVisible) ok=false;
+        g_favoritesOnly=false; g_sortName=true; PaintAll(dc, width, height);
+        LONG firstX=-1, secondX=-1;
+        for (const auto& hit : g_hits) { if (hit.id==ID_TILE) firstX=hit.r.left; if (hit.id==ID_TILE+1) secondX=hit.r.left; }
+        if (firstX<0 || secondX<0 || secondX>=firstX) ok=false;
+        g_items.pop_back(); g_sortName=false;
         // The experimental GPU option must remain reachable by scrolling on
         // the minimum window size, including high-DPI layouts.
         g_optHardware = true; p_gpuState = 3;
@@ -77,6 +90,30 @@ static bool TestLibraryLayout(HWND window) {
     for (HFONT* f : {&g_fUI,&g_fBold,&g_fTitle,&g_fSmall,&g_fHero}) { if (*f) DeleteObject(*f); *f=nullptr; }
     DeleteDC(dc); ReleaseDC(window, screen);
     DeleteObject(g_ambientArt); g_ambientArt = nullptr;
+    return ok;
+}
+
+static bool TestConfigRoundTrip() {
+    wchar_t root[MAX_PATH]={}, dir[MAX_PATH]={};
+    if (!GetTempPathW(MAX_PATH,root) || !GetTempFileNameW(root,L"LDT",0,dir)) return false;
+    DeleteFileW(dir); if (!CreateDirectoryW(dir,nullptr)) return false;
+    g_testConfigDir=dir; g_jobEvt=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+    if (!g_jobEvt) return false;
+    g_items.clear(); Item a; a.path=L"C:\\Video folder\\тест.mp4"; a.name=L"test";
+    a.favorite=true; a.speed=73; a.volume=365; a.edit.hue=25; g_items.push_back(a);
+    g_active=g_sel=0; g_optRotation=true; g_optBatteryFps=true; g_sortName=true;
+    g_userPreset=BuiltinColorPreset(2); g_hasUserPreset=true;
+    SaveConfig();
+    g_items.clear(); g_active=g_sel=-1; g_optRotation=g_optBatteryFps=g_sortName=false; g_hasUserPreset=false;
+    std::wstring active=LoadConfig();
+    bool ok=g_items.size()==1 && active==a.path && g_sel==0 && g_items[0].favorite &&
+        g_items[0].speed==73 && g_items[0].volume==365 && g_items[0].edit.hue==25 &&
+        g_optRotation && g_optBatteryFps && g_sortName && g_hasUserPreset && g_userPreset.warmth==-20;
+    CloseHandle(g_jobEvt); g_jobEvt=nullptr; g_jobs.clear(); g_items.clear();
+    g_active=g_sel=-1; g_optRotation=g_optBatteryFps=g_sortName=g_hasUserPreset=false;
+    DeleteFileW((g_testConfigDir+L"\\config.txt").c_str());
+    DeleteFileW((g_testConfigDir+L"\\log.txt").c_str());
+    RemoveDirectoryW(g_testConfigDir.c_str()); g_testConfigDir.clear();
     return ok;
 }
 
@@ -116,7 +153,7 @@ static bool TestD3DReadback() {
 }
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) { std::fprintf(stderr, "expected path to test MP4\n"); return 1; }
+    if (argc != 3) { std::fprintf(stderr, "expected paths to test MP4 and PNG\n"); return 1; }
     InitializeCriticalSection(&g_cs);
     HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     g_hi = GetModuleHandleW(nullptr);
@@ -130,6 +167,7 @@ int wmain(int argc, wchar_t** argv) {
     p_path = argv[1]; p_speed = 100; p_volume = 500;
     p_edit.hue = 45; p_edit.saturation = 130; p_edit.gamma = 120;
     int result = 0;
+    if (!TestConfigRoundTrip()) { std::fprintf(stderr, "configuration round-trip failed\n"); result = 18; }
     if (!TestD3DReadback()) { std::fprintf(stderr, "D3D11 surface readback failed\n"); result = 12; }
     if (!TestLibraryLayout(window)) { std::fprintf(stderr, "library UI layout or resource check failed\n"); result = 11; }
     {
@@ -188,6 +226,20 @@ int wmain(int argc, wchar_t** argv) {
         }
         p.Close();
     }
+    // Real WIC static image decoding and editor preview path.
+    std::wstring videoPath = p_path; p_path = argv[2];
+    {
+        Player image;
+        auto oldGeneration = g_previewGeneration;
+        if (!IsStaticImage(p_path) || !image.OpenImage() || !image.haveFrame || !image.bits) {
+            std::fprintf(stderr, "WIC image decode failed\n"); result=16;
+        } else {
+            image.StartRenderer(); image.RequestRedraw(); Sleep(500); image.StopRenderer();
+            if (g_previewGeneration <= oldGeneration) { std::fprintf(stderr, "image preview failed\n"); result=17; }
+        }
+        image.Close();
+    }
+    p_path = videoPath;
     // Exercise opt-in device setup and a software retry when unavailable.
     p_hardware=true;
     {
@@ -223,6 +275,6 @@ int wmain(int argc, wchar_t** argv) {
     p_hardware=false;
     g_previewWindow=nullptr; g_wall=nullptr; DestroyWindow(window);
     fMFShutdown(); if (SUCCEEDED(co)) CoUninitialize(); DeleteCriticalSection(&g_cs);
-    if (!result) std::puts("Windows layout, D3D/WARP readback, MF decoder fallback, preview and PCM gain: OK");
+    if (!result) std::puts("Windows library, WIC images, D3D/WARP, MF fallback, preview and PCM gain: OK");
     return result;
 }

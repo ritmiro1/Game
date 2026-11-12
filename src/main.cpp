@@ -25,6 +25,7 @@
 #include <mferror.h>
 #include <d3d11.h>
 #include <d3d10.h>
+#include <wincodec.h>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -35,6 +36,9 @@
 #include <vector>
 #include "resampler.h"
 #include "video_edit.h"
+#include "video_presets.h"
+#include "frame_rate_gate.h"
+#include "rotation.h"
 #include "filter_pool.h"
 #include "audio_gain.h"
 #include "latest_frame.h"
@@ -62,8 +66,8 @@ enum : UINT {
 enum {
     ID_OPEN = 1, ID_PAUSE, ID_STOP, ID_OK, ID_REMOVE,
     ID_FIT0 = 10, ID_FIT1, ID_FIT2,
-    ID_AUTORUN = 20, ID_FSPAUSE, ID_ECOPAUSE, ID_GPU,
-    ID_VOL = 30, ID_SPEED, ID_EDIT,
+    ID_AUTORUN = 20, ID_FSPAUSE, ID_ECOPAUSE, ID_GPU, ID_ROTATE, ID_BATTERY_FPS,
+    ID_VOL = 30, ID_SPEED, ID_EDIT, ID_FAVORITE, ID_FAVORITES_ONLY, ID_SORT,
     ID_TILE = 1000,
 };
 enum { IC_NONE, IC_PLUS, IC_PLAY, IC_PAUSE, IC_STOP };
@@ -82,6 +86,7 @@ struct Item {
     int volume = 100;  // 0..500 (%)
     int fit = 0;       // 0 fill (cover), 1 fit (letterbox), 2 stretch
     int speed = 100;   // 15..200 percent
+    bool favorite = false;
     VideoEdit edit;
     HBITMAP thumb = nullptr;
     int tw = 0, th = 0;
@@ -123,6 +128,10 @@ static std::wstring g_filter;
 static bool g_optFsPause = true, g_optAutorun = false, g_mfOk = false;
 static bool g_optEcoPause = false, g_sessionLocked = false, g_displayOff = false, g_editorDark = true;
 static bool g_optHardware = false; // opt-in until tested on the user's GPU/driver
+static bool g_favoritesOnly = false, g_sortName = false, g_optRotation = false, g_optBatteryFps = false;
+static RotationClock g_rotationClock;
+static bool g_hasUserPreset = false;
+static VideoEdit g_userPreset;
 static HPOWERNOTIFY g_displayNotify = nullptr;
 // GUID_CONSOLE_DISPLAY_STATE (0 = off, 1 = on, 2 = dimmed).
 static const GUID kConsoleDisplayState = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47}};
@@ -132,7 +141,7 @@ static HANDLE g_jobEvt;
 
 // player shared state
 static std::atomic<bool> p_quit{false}, p_userPause{false}, p_autoPause{false}, p_repaint{false};
-static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0}, p_speed{100};
+static std::atomic<int> p_volume{100}, p_fit{0}, p_layoutGen{0}, p_speed{100}, p_fpsLimit{0};
 static std::atomic<bool> p_mute{false}, p_hardware{false};
 // 0=off, 1=starting, 2=D3D manager enabled, 3=software fallback.
 static std::atomic<int> p_gpuState{0};
@@ -187,7 +196,13 @@ static std::string WToU8(const std::wstring& w) {
     WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &s[0], n, nullptr, nullptr);
     return s;
 }
+#ifdef LOOPDESK_TESTING
+static std::wstring g_testConfigDir;
+#endif
 static std::wstring ConfigDir() {
+#ifdef LOOPDESK_TESTING
+    if (!g_testConfigDir.empty()) return g_testConfigDir;
+#endif
     wchar_t b[MAX_PATH] = L"";
     SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, b);
     std::wstring d = std::wstring(b) + L"\\LoopDesk";
@@ -231,6 +246,12 @@ static bool ContainsNoCase(std::wstring hay, std::wstring needle) {
     CharUpperBuffW(&needle[0], (DWORD)needle.size());
     return hay.find(needle) != std::wstring::npos;
 }
+static bool IsStaticImage(const std::wstring& path) {
+    size_t dot = path.find_last_of(L'.');
+    if (dot == std::wstring::npos) return false;
+    const wchar_t* ext = path.c_str() + dot;
+    return !lstrcmpiW(ext,L".png") || !lstrcmpiW(ext,L".jpg") || !lstrcmpiW(ext,L".jpeg") || !lstrcmpiW(ext,L".bmp");
+}
 static bool FileExists(const std::wstring& p) {
     DWORD a = GetFileAttributesW(p.c_str());
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
@@ -270,11 +291,19 @@ static void SaveConfig() {
     s += std::string("fspause=") + (g_optFsPause ? "1" : "0") + "\r\n";
     s += std::string("ecopause=") + (g_optEcoPause ? "1" : "0") + "\r\n";
     s += std::string("hardware=") + (g_optHardware ? "1" : "0") + "\r\n";
+    s += std::string("sortname=") + (g_sortName ? "1" : "0") + "\r\n";
+    s += std::string("rotate=") + (g_optRotation ? "1" : "0") + "\r\n";
+    s += std::string("batteryfps=") + (g_optBatteryFps ? "1" : "0") + "\r\n";
+    if (g_hasUserPreset) s += "preset=" + std::to_string(g_userPreset.brightness) + "|" +
+        std::to_string(g_userPreset.contrast) + "|" + std::to_string(g_userPreset.saturation) + "|" +
+        std::to_string(g_userPreset.gamma) + "|" + std::to_string(g_userPreset.warmth) + "|" +
+        std::to_string(g_userPreset.hue) + "|" + std::to_string((int)g_userPreset.invert) + "\r\n";
     s += std::string("editordark=") + (g_editorDark ? "1" : "0") + "\r\n";
     s += "active=" + (g_active >= 0 ? WToU8(g_items[(size_t)g_active].path) : std::string()) + "\r\n";
     s += "selected=" + (g_sel >= 0 ? WToU8(g_items[(size_t)g_sel].path) : std::string()) + "\r\n";
     for (auto& it : g_items) {
         s += "item=" + std::to_string(it.volume) + "|" + std::to_string(it.fit) + "|" + WToU8(it.path) + "\r\n";
+        if (it.favorite) s += "favorite=1|" + WToU8(it.path) + "\r\n";
         s += "speed=" + std::to_string(it.speed) + "|" + WToU8(it.path) + "\r\n";
         const VideoEdit& e = it.edit;
         s += "edit=" + std::to_string(e.left) + "|" + std::to_string(e.top) + "|" +
@@ -345,6 +374,20 @@ static std::wstring LoadConfig() {  // returns path of the wallpaper that was ac
         if (key == "fspause") g_optFsPause = (val != "0");
         else if (key == "ecopause") g_optEcoPause = (val != "0");
         else if (key == "hardware") g_optHardware = (val == "1");
+        else if (key == "sortname") g_sortName = (val == "1");
+        else if (key == "rotate") g_optRotation = (val == "1");
+        else if (key == "batteryfps") g_optBatteryFps = (val == "1");
+        else if (key == "preset") {
+            VideoEdit e; int invert=0;
+            if (sscanf(val.c_str(), "%d|%d|%d|%d|%d|%d|%d", &e.brightness, &e.contrast,
+                       &e.saturation, &e.gamma, &e.warmth, &e.hue, &invert)==7) {
+                e.invert=invert!=0; NormalizeEdit(e); g_userPreset=e; g_hasUserPreset=true;
+            }
+        } else if (key == "favorite") {
+            size_t a=val.find('|');
+            if (a!=std::string::npos) { int k=FindItem(U8ToW(val.substr(a+1)));
+                if (k>=0) g_items[(size_t)k].favorite=(val.substr(0,a)=="1"); }
+        }
         else if (key == "editordark") g_editorDark = (val != "0");
         else if (key == "active") active = U8ToW(val);
         else if (key == "selected") selected = U8ToW(val);
@@ -608,6 +651,12 @@ struct AudioOut {
         if (waveOutWrite(h, &b->hdr, sizeof(WAVEHDR)) == MMSYSERR_NOERROR) b->used = true;
         else waveOutUnprepareHeader(h, &b->hdr, sizeof(WAVEHDR));
     }
+    bool Drained() {
+        if (!h) return true;
+        Reap();
+        for (auto b : blocks) if (b->used) return false;
+        return true;
+    }
     void Reset(bool keepPaused) {
         if (!h) return;
         waveOutReset(h);
@@ -722,28 +771,69 @@ struct Player {
             }
         }
         cur->Release();
-        if (!fw || !fh || fw > 16384 || fh > 16384) return false;
-        if (fw != dw || fh != dh || !bits) {
+        return AllocateFrame(fw, fh);
+    }
+    bool AllocateFrame(UINT32 width, UINT32 height) {
+        if (!width || !height || width > 16384 || height > 16384 || (uint64_t)width*height > 67108864) return false;
+        if (width != dw || height != dh || !bits) {
             BITMAPINFO bi = {};
             bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bi.bmiHeader.biWidth = (LONG)fw;
-            bi.bmiHeader.biHeight = -(LONG)fh;  // top-down
-            bi.bmiHeader.biPlanes = 1;
-            bi.bmiHeader.biBitCount = 32;
-            bi.bmiHeader.biCompression = BI_RGB;
+            bi.bmiHeader.biWidth = (LONG)width; bi.bmiHeader.biHeight = -(LONG)height;
+            bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
             if (!mem) mem = CreateCompatibleDC(nullptr);
+            if (!mem) return false;
             void* pv = nullptr;
             HBITMAP nb = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &pv, nullptr, 0);
-            if (!nb || !pv) return false;
+            if (!nb || !pv) { if (nb) DeleteObject(nb); return false; }
             HGDIOBJ o = SelectObject(mem, nb);
             if (!oldBmp) oldBmp = o;
             if (dib) DeleteObject(dib);
-            dib = nb;
-            bits = (BYTE*)pv;
-            dw = fw;
-            dh = fh;
-            haveFrame = false;
+            dib = nb; bits = (BYTE*)pv; dw = width; dh = height; haveFrame = false;
         }
+        return true;
+    }
+    bool OpenImage() {
+        IWICImagingFactory* factory = nullptr; IWICBitmapDecoder* decoder = nullptr;
+        IWICBitmapFrameDecode* frame = nullptr; IWICBitmapScaler* scaler = nullptr;
+        IWICFormatConverter* convert = nullptr;
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+        if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(p_path.c_str(), nullptr, GENERIC_READ,
+                                                                  WICDecodeMetadataCacheOnLoad, &decoder);
+        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+        UINT width=0, height=0;
+        if (SUCCEEDED(hr)) hr = frame->GetSize(&width, &height);
+        if (SUCCEEDED(hr) && (!width || !height || width > 32768 || height > 32768 || (uint64_t)width*height > 120000000)) hr=E_FAIL;
+        LoadLayout();
+        int bw=1920, bh=1080;
+        for (const auto& monitor : mons) {
+            int w=monitor.right-monitor.left, h=monitor.bottom-monitor.top;
+            if ((int64_t)w*h > (int64_t)bw*bh) { bw=w; bh=h; }
+        }
+        UINT targetW=width, targetH=height;
+        if (SUCCEEDED(hr)) {
+            double sx=bw/(double)width, sy=bh/(double)height;
+            double scale=std::min(1.0, p_fit.load()==1 ? std::min(sx,sy) : std::max(sx,sy));
+            scale=std::min(scale, std::sqrt(32000000.0/((double)width*height)));
+            targetW=std::max(1u,(UINT)(width*scale)); targetH=std::max(1u,(UINT)(height*scale));
+            if (targetW > 16384 || targetH > 16384) hr=E_FAIL;
+        }
+        IWICBitmapSource* input = frame;
+        if (SUCCEEDED(hr) && (targetW != width || targetH != height)) {
+            hr=factory->CreateBitmapScaler(&scaler);
+            if (SUCCEEDED(hr)) hr=scaler->Initialize(frame,targetW,targetH,WICBitmapInterpolationModeFant);
+            input=scaler;
+        }
+        if (SUCCEEDED(hr)) hr=factory->CreateFormatConverter(&convert);
+        if (SUCCEEDED(hr)) hr=convert->Initialize(input, GUID_WICPixelFormat32bppBGR, WICBitmapDitherTypeNone,
+                                                  nullptr, 0, WICBitmapPaletteTypeCustom);
+        if (SUCCEEDED(hr) && !AllocateFrame(targetW,targetH)) hr=E_OUTOFMEMORY;
+        if (SUCCEEDED(hr)) hr=convert->CopyPixels(nullptr, targetW*4, targetW*targetH*4, bits);
+        if (convert) convert->Release(); if (scaler) scaler->Release(); if (frame) frame->Release();
+        if (decoder) decoder->Release(); if (factory) factory->Release();
+        if (FAILED(hr)) { PlayerFail(L"Не удалось открыть изображение", hr); return false; }
+        fw=dw; fh=dh; stride=(LONG)(dw*4); vis=RECT{0,0,(LONG)dw,(LONG)dh};
+        rawFrame.clear(); frameProcessed=false; haveFrame=true;
+        Log(L"image: original %ux%u, displayed %ux%u", width,height,dw,dh);
         return true;
     }
     void SetupAudio() {
@@ -1241,6 +1331,20 @@ struct Player {
     }
     enum { R_QUIT, R_FAIL, R_REOPEN };
     void Run() {
+        if (IsStaticImage(p_path)) {
+            p_gpuState=0; // WIC images do not use the video decoder
+            if (!OpenImage()) return;
+            StartRenderer(); RequestRedraw();
+            int layout = p_layoutGen.load();
+            while (!p_quit.load()) {
+                int current = p_layoutGen.load();
+                if (current != layout) { layout=current; p_repaint=true; }
+                if (p_repaint.exchange(false)) RequestRedraw();
+                Sleep(25);
+            }
+            StopRenderer();
+            return;
+        }
         bool retried = false;
         for (;;) {
             if (!OpenWithFallback()) return;
@@ -1273,12 +1377,13 @@ struct Player {
     int Play(HRESULT& hr) {
         const double LEAD = 0.12;  // seconds of audio kept queued
         IMFSample *vS = nullptr, *aS = nullptr;
-        double vPts = 0, aPts = 0, base = 0, aUntil = 0, lastV = 0, frameDur = 1.0 / 30, pauseAt = 0;
+        double vPts = 0, aPts = 0, base = 0, aUntil = 0, lastV = 0, frameDur = 1.0 / 30, pauseAt = 0, eosWait = 0;
         bool clockSet = false, vEos = false, aEos = !hasAudio, wasPaused = false;
         double speed = p_speed.load() / 100.0;
         int framesThisPass = 0, skipped = 0, result = R_QUIT;
         int statDecoded = 0, statDrawn = 0, statDropped = 0;
         double statStart = NowSec(), statDecodeMs = 0;
+        FrameRateGate frameRateGate;
         int requestedLayout = p_layoutGen.load();
         bool failed = false;
         hr = S_OK;
@@ -1292,6 +1397,7 @@ struct Player {
             }
             const bool paused = p_userPause.load() || p_autoPause.load();
             if (paused) {
+                eosWait = 0;
                 if (!wasPaused) {
                     wasPaused = true;
                     pauseAt = NowSec();
@@ -1362,7 +1468,7 @@ struct Player {
             // 2) feed audio a little ahead of the clock
             if (hasAudio && clockSet) {
                 int guard = 0;
-                while (!aEos && aUntil - now < LEAD * speed && guard++ < 96) {
+                while ((!aEos || aS) && aUntil - now < LEAD * speed && guard++ < 96) {
                     now = (NowSec() - base) * speed;
                     if (aUntil - now >= LEAD * speed) break;
                     if (!aS) {
@@ -1403,8 +1509,10 @@ struct Player {
                 if (d <= 0.001) {
                     bool late = d / speed < -0.12;
                     if (!late || ++skipped > 4) {
-                        QueueFrame(vS);
-                        ++statDrawn;
+                        if (frameRateGate.allow(NowSec(), p_fpsLimit.load())) {
+                            QueueFrame(vS);
+                            ++statDrawn;
+                        }
                         skipped = 0;
                     } else ++statDropped;
                     if (NowSec() - statStart >= 10.0 && statDecoded > 0) {
@@ -1423,9 +1531,17 @@ struct Player {
                 } else {
                     Sleep(d / speed > 0.008 ? 3 : 1);
                 }
-            } else if (vEos && aEos) {
+            } else if (vEos && aEos && !aS) {
                 double endT = std::max(lastV + frameDur, hasAudio ? aUntil : 0.0);
                 if (!clockSet || now >= endT - 0.004) {
+                    // Do not reset waveOut while the last queued block is still
+                    // playing. Bound the wait for broken/stalled drivers.
+                    if (hasAudio && !out.Drained()) {
+                        if (eosWait == 0) eosWait = NowSec();
+                        if (NowSec() - eosWait < 1.0) { Sleep(3); continue; }
+                        Log(L"audio: loop drain timed out, resetting output");
+                    }
+                    eosWait = 0;
                     if (framesThisPass == 0) {
                         hr = E_FAIL;
                         failed = true;
@@ -1512,7 +1628,8 @@ static bool StartWallpaper(int idx) {
     SetErr(L"");
     g_active = idx;
     g_sel = idx;
-    if (!g_mfOk) {
+    g_rotationClock.reset();
+    if (!g_mfOk && !IsStaticImage(g_items[(size_t)idx].path)) {
         SetErr(L"Media Foundation недоступен (установите Media Feature Pack)");
         g_active = -1;
         InvalidateRect(g_main, nullptr, FALSE);
@@ -1817,7 +1934,7 @@ static std::wstring MetaText(const Item& it) {
 
 // ------------------------------------------------------------------ non-destructive frame editor
 static HWND g_editor = nullptr, g_edPreview = nullptr;
-static HWND g_edTracks[6] = {}, g_edLabels[6] = {}, g_edButtons[9] = {}, g_edMirror[3] = {}, g_edTitle = nullptr;
+static HWND g_edTracks[6] = {}, g_edLabels[6] = {}, g_edButtons[9] = {}, g_edMirror[3] = {}, g_edTitle = nullptr, g_edPreset = nullptr;
 static HBRUSH g_editorDarkBrush = nullptr;
 static HDC g_previewPaintDC = nullptr;
 static HBITMAP g_previewPaintBitmap = nullptr;
@@ -1835,7 +1952,7 @@ static POINT g_cropAnchor = {};
 static VideoEdit g_dragOriginal;
 enum { ED_BRIGHT = 101, ED_CONTRAST, ED_SAT, ED_GAMMA, ED_WARMTH, ED_HUE,
        ED_RESET = 110, ED_FREE, ED_169, ED_43, ED_11, ED_APPLY, ED_CANCEL,
-       ED_FLIP_X, ED_FLIP_Y, ED_PAUSE, ED_INVERT, ED_THEME };
+       ED_FLIP_X, ED_FLIP_Y, ED_PAUSE, ED_INVERT, ED_THEME, ED_PRESETS };
 static const wchar_t* EDITOR_CLASS = L"LoopDeskEditor";
 static const wchar_t* PREVIEW_CLASS = L"LoopDeskPreview";
 static const wchar_t* SLIDER_CLASS = L"LoopDeskEditorSlider";
@@ -1873,7 +1990,7 @@ static void CloseEditor(bool apply) {
     g_previewWindow = nullptr; g_previewRefresh = false;
     g_previewPixels.clear(); g_previewWidth = 0; g_previewHeight = 0; ++g_previewGeneration;
     LeaveCriticalSection(&g_cs);
-    HWND h = g_editor; g_editor = nullptr; g_edPreview = nullptr;
+    HWND h = g_editor; g_editor = nullptr; g_edPreview = nullptr; g_edPreset = nullptr;
     DestroyWindow(h);
     g_previewMessage = false;
     g_previewDisplay.clear(); g_displayWidth = g_displayHeight = 0; g_displayGeneration = 0;
@@ -2063,6 +2180,7 @@ static void EditorLayout(HWND h) {
     MoveWindow(g_edButtons[0], x, S(406), S(250), S(27), TRUE);
     MoveWindow(g_edButtons[7], x, S(437), S(250), S(27), TRUE);
     MoveWindow(g_edButtons[8], x, S(468), S(250), S(27), TRUE);
+    MoveWindow(g_edPreset, x, S(499), S(250), S(27), TRUE);
     MoveWindow(g_edButtons[5], x, ht-S(43), half, S(30), TRUE);
     MoveWindow(g_edButtons[6], x+S(129), ht-S(43), half, S(30), TRUE);
 }
@@ -2173,6 +2291,7 @@ static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         const wchar_t* labels[] = {L"Сбросить всё",L"Весь кадр",L"Обрезка 16:9",L"Обрезка 4:3",L"Обрезка 1:1",L"Применить",L"Отмена", L"Остановить кадр", g_editorDark ? L"Тема: чёрная" : L"Тема: светлая"};
         int ids[] = {ED_RESET,ED_FREE,ED_169,ED_43,ED_11,ED_APPLY,ED_CANCEL,ED_PAUSE,ED_THEME};
         for(int i=0;i<9;i++) g_edButtons[i]=EditorChild(h,L"BUTTON",labels[i],WS_TABSTOP | BS_OWNERDRAW,ids[i]);
+        g_edPreset = EditorChild(h, L"BUTTON", L"Цветовые пресеты…", WS_TABSTOP | BS_OWNERDRAW, ED_PRESETS);
         SetEditorLabels(); EditorLayout(h);
         g_previewMessage = false;
         EnterCriticalSection(&g_cs);
@@ -2263,6 +2382,31 @@ static LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case ED_FLIP_X: g_editDraft.flipX = !g_editDraft.flipX; InvalidateRect(g_edMirror[0],nullptr,FALSE); PublishEdit(); break;
         case ED_FLIP_Y: g_editDraft.flipY = !g_editDraft.flipY; InvalidateRect(g_edMirror[1],nullptr,FALSE); PublishEdit(); break;
         case ED_INVERT: g_editDraft.invert = !g_editDraft.invert; InvalidateRect(g_edMirror[2],nullptr,FALSE); PublishEdit(); break;
+        case ED_PRESETS: {
+            HMENU menu = CreatePopupMenu();
+            if (!menu) break;
+            AppendMenuW(menu, MF_STRING, 1, L"Оригинальные цвета");
+            AppendMenuW(menu, MF_STRING, 2, L"Кино");
+            AppendMenuW(menu, MF_STRING, 3, L"Ночь");
+            AppendMenuW(menu, MF_STRING, 4, L"Чёрно-белый");
+            AppendMenuW(menu, MF_STRING, 5, L"Тёплый");
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(menu, MF_STRING, 6, L"Сохранить текущие цвета как свой пресет");
+            AppendMenuW(menu, MF_STRING | (g_hasUserPreset ? 0 : MF_GRAYED), 7, L"Применить свой пресет");
+            RECT r = {}; GetWindowRect(g_edPreset, &r);
+            int choice = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, r.left, r.bottom, 0, h, nullptr);
+            DestroyMenu(menu);
+            if (choice >= 1 && choice <= 5) {
+                ApplyPresetColors(g_editDraft, BuiltinColorPreset(choice-1)); SetEditorLabels();
+                InvalidateRect(g_edMirror[2], nullptr, FALSE); PublishEdit();
+            } else if (choice == 6) {
+                g_userPreset = g_editDraft; g_hasUserPreset = true; SaveConfig();
+            } else if (choice == 7 && g_hasUserPreset) {
+                ApplyPresetColors(g_editDraft, g_userPreset); SetEditorLabels();
+                InvalidateRect(g_edMirror[2], nullptr, FALSE); PublishEdit();
+            }
+            break;
+        }
         case ED_THEME:
             g_editorDark = !g_editorDark; EditorTitleTheme(h); SaveConfig();
             SetWindowTextW(g_edButtons[8], g_editorDark ? L"Тема: чёрная" : L"Тема: светлая");
@@ -2307,7 +2451,10 @@ static void PaintAll(HDC dc, int W, int H) {
     g_gridRc = rg;
     std::vector<int> vis;
     for (int i = 0; i < (int)g_items.size(); i++)
-        if (ContainsNoCase(g_items[(size_t)i].name, g_filter)) vis.push_back(i);
+        if ((!g_favoritesOnly || g_items[(size_t)i].favorite) && ContainsNoCase(g_items[(size_t)i].name, g_filter)) vis.push_back(i);
+    if (g_sortName) std::stable_sort(vis.begin(), vis.end(), [](int a, int b) {
+        return _wcsicmp(g_items[(size_t)a].name.c_str(), g_items[(size_t)b].name.c_str()) < 0;
+    });
     const int gap = S(16), gw = (int)(rg.right - rg.left) - S(8);
     const int cols = std::max(1, (gw - gap) / (S(190) + gap));
     const int tw = std::max(S(60), (gw - gap * (cols + 1)) / cols), imageH = tw * 9 / 16;
@@ -2337,13 +2484,13 @@ static void PaintAll(HDC dc, int W, int H) {
                 Frame(dc, hero, 1, C_LINE);
             }
             RECT hint = {rg.left + S(20), hero.bottom + S(10), rg.right - S(20), hero.bottom + S(38)};
-            Txt(dc, L"Или перетащите видеофайл в это окно", hint, g_fSmall, C_DIM, DT_CENTER | DT_ONE);
+            Txt(dc, L"Или перетащите видео или изображение в это окно", hint, g_fSmall, C_DIM, DT_CENTER | DT_ONE);
         } else {
             RECT a = rg; a.bottom = (rg.top + rg.bottom) / 2;
-            Txt(dc, L"Ничего не найдено", a, g_fTitle, C_TEXT,
+            Txt(dc, g_favoritesOnly && g_filter.empty() ? L"В избранном пока пусто" : L"Ничего не найдено", a, g_fTitle, C_TEXT,
                 DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
             RECT b = rg; b.top = a.bottom + S(8);
-            Txt(dc, L"Попробуйте изменить запрос", b, g_fUI, C_DIM, DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+            Txt(dc, g_favoritesOnly && g_filter.empty() ? L"Добавьте обои в избранное на панели справа" : L"Попробуйте изменить запрос", b, g_fUI, C_DIM, DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
         }
     }
     for (size_t k = 0; k < vis.size(); k++) {
@@ -2371,6 +2518,11 @@ static void PaintAll(HDC dc, int W, int H) {
             Icon(dc, p_userPause.load() ? IC_PAUSE : IC_PLAY, bd.left + S(12), (bd.top + bd.bottom) / 2, S(4), C_MINT);
             RECT badgeText = {bd.left + S(23), bd.top, bd.right - S(4), bd.bottom};
             Txt(dc, p_userPause.load() ? L"ПАУЗА" : L"АКТИВНО", badgeText, g_fSmall, C_TEXT);
+        }
+        if (it.favorite) {
+            RECT star = {t.right-S(34), t.top+S(8), t.right-S(8), t.top+S(33)};
+            Round(dc, star, S(8), C_TOP, C_LINE);
+            Txt(dc, L"★", star, g_fBold, C_BOOST, DT_CENTER | DT_ONE);
         }
         if (i == g_sel) Frame(dc, t, std::max(1, S(1)), C_ACC_H);
         RECT hr;
@@ -2422,13 +2574,10 @@ static void PaintAll(HDC dc, int W, int H) {
     Fill(dc, rtool, C_BG);
     RECT sbx = {S(16), topH + S(14), S(16) + S(280), topH + S(50)};
     Round(dc, sbx, S(8), C_INPUT, C_LINE);
-    {
-        wchar_t b[64];
-        _snwprintf(b, 63, L"В КОЛЛЕКЦИИ: %d", (int)g_items.size());
-        b[63] = 0;
-        RECT rc = {sbx.right + S(14), topH, W - panW - S(12), topH + toolH};
-        Txt(dc, b, rc, g_fUI, C_DIM);
-    }
+    RECT favFilter = {sbx.right + S(10), topH + S(14), sbx.right + S(132), topH + S(50)};
+    Button(dc, favFilter, ID_FAVORITES_ONLY, g_favoritesOnly ? L"★ Избранное" : L"☆ Избранное", IC_NONE, g_favoritesOnly);
+    RECT sort = {favFilter.right + S(8), topH + S(14), favFilter.right + S(108), topH + S(50)};
+    Button(dc, sort, ID_SORT, g_sortName ? L"А–Я" : L"По добавл.", IC_NONE, false);
 
     // ----- right panel
     RECT rp = {W - panW, topH, W, H - botH};
@@ -2460,7 +2609,10 @@ static void PaintAll(HDC dc, int W, int H) {
         y += S(26);
         RECT editButton = {px, y, px + pw, y + S(34)};
         Button(dc, editButton, ID_EDIT, L"Редактировать кадр…", IC_NONE, true);
-        y += S(44);
+        y += S(40);
+        RECT favorite = {px, y, px + pw, y + S(30)};
+        Button(dc, favorite, ID_FAVORITE, it.favorite ? L"★ Убрать из избранного" : L"☆ В избранное", IC_NONE, false);
+        y += S(38);
         RECT l1 = {px, y, px + pw, y + 1};
         Fill(dc, l1, C_LINE);
         y += S(10);
@@ -2569,11 +2721,16 @@ static void PaintAll(HDC dc, int W, int H) {
     y += S(26);
     Checkbox(dc, px, y, pw, ID_ECOPAUSE, L"Пауза: батарея / блокировка / экран", g_optEcoPause);
     y += S(26);
+    Checkbox(dc, px, y, pw, ID_ROTATE, L"Менять обои каждые 15 минут", g_optRotation);
+    y += S(26);
+    Checkbox(dc, px, y, pw, ID_BATTERY_FPS, L"30 кадров/с от батареи", g_optBatteryFps);
+    y += S(26);
     Checkbox(dc, px, y, pw, ID_GPU, L"GPU-декодирование (эксперимент)", g_optHardware);
     y += S(26);
     if (g_optHardware && g_active >= 0) {
         int state = p_gpuState.load();
-        const wchar_t* text = state == 2 ? L"D3D включён; декодер выбирает Windows" :
+        const wchar_t* text = IsStaticImage(g_items[(size_t)g_active].path) ? L"Для изображения используется WIC" :
+                              state == 2 ? L"D3D включён; декодер выбирает Windows" :
                               state == 3 ? L"GPU недоступен: программный режим" : L"Подготовка GPU…";
         RECT hint = {px + S(27), y, px + pw, y + S(32)};
         Txt(dc, text, hint, g_fSmall, state == 3 ? C_WARN : C_DIM, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
@@ -2638,8 +2795,8 @@ static int HitAt(POINT pt) {
     for (size_t i = g_hits.size(); i-- > 0;) {
         int id = g_hits[i].id;
         if ((id == ID_VOL || id == ID_SPEED || id == ID_EDIT ||
-             id == ID_REMOVE || (id >= ID_FIT0 && id <= ID_FIT2) ||
-             id == ID_AUTORUN || id == ID_FSPAUSE || id == ID_ECOPAUSE || id == ID_GPU) && !PtInRect(&g_panelRc, pt)) continue;
+             id == ID_REMOVE || id == ID_FAVORITE || (id >= ID_FIT0 && id <= ID_FIT2) ||
+             id == ID_AUTORUN || id == ID_FSPAUSE || id == ID_ECOPAUSE || id == ID_GPU || id == ID_ROTATE || id == ID_BATTERY_FPS) && !PtInRect(&g_panelRc, pt)) continue;
         if (PtInRect(&g_hits[i].r, pt)) return id;
     }
     return 0;
@@ -2673,7 +2830,7 @@ static void AddFiles(const std::vector<std::wstring>& files) {
         if (first < 0) first = k;
     }
     if (first >= 0) {
-        g_filter.clear();
+        g_filter.clear(); g_favoritesOnly = false;
         if (g_edit) SetWindowTextW(g_edit, L"");
         StartWallpaper(first);
     }
@@ -2685,11 +2842,11 @@ static void OpenDialog(HWND h) {
     OPENFILENAMEW of = {};
     of.lStructSize = sizeof(of);
     of.hwndOwner = h;
-    of.lpstrFilter = L"Видео (*.mp4;*.m4v;*.mov;*.wmv;*.avi;*.mkv;*.webm)\0*.mp4;*.m4v;*.mov;*.wmv;*.avi;*.mkv;*.webm\0"
+    of.lpstrFilter = L"Видео и изображения (*.mp4;*.m4v;*.mov;*.wmv;*.avi;*.mkv;*.webm;*.png;*.jpg;*.jpeg;*.bmp)\0*.mp4;*.m4v;*.mov;*.wmv;*.avi;*.mkv;*.webm;*.png;*.jpg;*.jpeg;*.bmp\0"
                      L"Все файлы (*.*)\0*.*\0";
     of.lpstrFile = buf.data();
     of.nMaxFile = (DWORD)buf.size();
-    of.lpstrTitle = L"Выберите видео для рабочего стола";
+    of.lpstrTitle = L"Выберите видео или изображение для рабочего стола";
     of.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ALLOWMULTISELECT | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&of)) return;
     std::vector<std::wstring> files;
@@ -2765,6 +2922,22 @@ static void Command(HWND h, int id) {
     case ID_OK: HideMain(); break;
     case ID_REMOVE: RemoveItem(g_sel); break;
     case ID_EDIT: OpenEditor(); break;
+    case ID_FAVORITE:
+        if (g_sel >= 0 && g_sel < (int)g_items.size()) {
+            Item& item = g_items[(size_t)g_sel]; item.favorite = !item.favorite;
+            SaveConfig(); InvalidateRect(h, nullptr, FALSE);
+        }
+        break;
+    case ID_FAVORITES_ONLY:
+        g_favoritesOnly = !g_favoritesOnly; g_scroll = 0; InvalidateRect(h, nullptr, FALSE); break;
+    case ID_SORT:
+        g_sortName = !g_sortName; g_scroll = 0; SaveConfig(); InvalidateRect(h, nullptr, FALSE); break;
+    case ID_ROTATE:
+        g_optRotation = !g_optRotation; g_rotationClock.reset(); SaveConfig(); InvalidateRect(h, nullptr, FALSE); break;
+    case ID_BATTERY_FPS:
+        g_optBatteryFps = !g_optBatteryFps;
+        if (!g_optBatteryFps) p_fpsLimit = 0;
+        SaveConfig(); InvalidateRect(h, nullptr, FALSE); break;
     case ID_FIT0: case ID_FIT1: case ID_FIT2:
         if (g_sel >= 0 && g_sel < (int)g_items.size() && g_items[(size_t)g_sel].fit != id - ID_FIT0) {
             g_items[(size_t)g_sel].fit = id - ID_FIT0;
@@ -3064,11 +3237,17 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (wp == 1) {
             SYSTEM_POWER_STATUS power = {};
             bool battery = GetSystemPowerStatus(&power) && power.ACLineStatus == 0;
+            p_fpsLimit = g_optBatteryFps && battery ? 30 : 0;
             bool fs = g_active >= 0 && ((g_optFsPause && ForegroundIsFullscreen()) ||
                       (g_optEcoPause && (g_sessionLocked || g_displayOff || battery)));
             if (fs != p_autoPause.load()) {
                 p_autoPause = fs;
                 InvalidateRect(h, nullptr, FALSE);
+            }
+            bool rotationBlocked = g_active < 0 || g_pendingAction || g_editor || p_userPause.load() || p_autoPause.load();
+            if (g_rotationClock.tick(GetTickCount64(), g_optRotation, rotationBlocked, 15ULL * 60 * 1000)) {
+                int next = NextPlayable(g_items.size(), g_active, [](size_t i) { return FileExists(g_items[i].path); });
+                if (next >= 0) StartWallpaper(next);
             }
             if (g_active >= 0 && !g_pendingAction) {
                 HWND w = g_wall.load();
