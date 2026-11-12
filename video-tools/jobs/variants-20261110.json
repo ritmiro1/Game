@@ -1,0 +1,16 @@
+{
+  "revision": 1,
+  "source": "video-tools/input/armorypass-ejoy.mp4",
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "release_tag": "video-variants-20261110-cc989019",
+  "comparison_variants": 10,
+  "comparison_dimensions": [720, 1280],
+  "combined_exports": [[720, 1280], [1080, 1920], [2160, 3840]],
+  "preserve_frames": 1518,
+  "copy_original_aac": true,
+  "source_search": false,
+  "generative_content": false,
+  "frame_interpolation": false,
+  "keep_existing_4k_16k_and_playback_files": true,
+  "publish": "separate GitHub release; only a lightweight preview and small reports tracked"
+}
