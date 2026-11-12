@@ -101,18 +101,26 @@ static bool TestConfigRoundTrip() {
     if (!g_jobEvt) return false;
     g_items.clear(); Item a; a.path=L"C:\\Video folder\\тест.mp4"; a.name=L"test";
     a.favorite=true; a.speed=73; a.volume=365; a.edit.hue=25; g_items.push_back(a);
-    g_active=g_sel=0; g_optRotation=true; g_optBatteryFps=true; g_sortName=true;
+    g_active=g_sel=0; g_optRotation=true; g_rotationMinutes=30; g_optBatteryFps=true; g_sortName=true;
     g_userPreset=BuiltinColorPreset(2); g_hasUserPreset=true;
     SaveConfig();
-    g_items.clear(); g_active=g_sel=-1; g_optRotation=g_optBatteryFps=g_sortName=false; g_hasUserPreset=false;
+    g_items[0].favorite=false; g_items[0].speed=22; SaveConfig();
+    // Simulate an interrupted/truncated settings file; load the previous backup.
+    HANDLE corrupt=CreateFileW((g_testConfigDir+L"\\config.txt").c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,0,nullptr);
+    if (corrupt == INVALID_HANDLE_VALUE) return false;
+    const char broken[]="version=2\r\nincomplete"; DWORD written=0;
+    WriteFile(corrupt,broken,sizeof(broken)-1,&written,nullptr); CloseHandle(corrupt);
+    g_items.clear(); g_active=g_sel=-1; g_optRotation=g_optBatteryFps=g_sortName=false; g_rotationMinutes=15; g_hasUserPreset=false;
     std::wstring active=LoadConfig();
     bool ok=g_items.size()==1 && active==a.path && g_sel==0 && g_items[0].favorite &&
         g_items[0].speed==73 && g_items[0].volume==365 && g_items[0].edit.hue==25 &&
-        g_optRotation && g_optBatteryFps && g_sortName && g_hasUserPreset && g_userPreset.warmth==-20;
+        g_optRotation && g_rotationMinutes==30 && g_optBatteryFps && g_sortName && g_hasUserPreset && g_userPreset.warmth==-20;
     CloseHandle(g_jobEvt); g_jobEvt=nullptr; g_jobs.clear(); g_items.clear();
-    g_active=g_sel=-1; g_optRotation=g_optBatteryFps=g_sortName=g_hasUserPreset=false;
+    g_active=g_sel=-1; g_optRotation=g_optBatteryFps=g_sortName=g_hasUserPreset=false; g_rotationMinutes=15;
     DeleteFileW((g_testConfigDir+L"\\config.txt").c_str());
     DeleteFileW((g_testConfigDir+L"\\log.txt").c_str());
+    DeleteFileW((g_testConfigDir+L"\\config.bak").c_str());
+    DeleteFileW((g_testConfigDir+L"\\config.bak.tmp").c_str());
     RemoveDirectoryW(g_testConfigDir.c_str()); g_testConfigDir.clear();
     return ok;
 }

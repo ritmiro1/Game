@@ -130,6 +130,7 @@ static bool g_optEcoPause = false, g_sessionLocked = false, g_displayOff = false
 static bool g_optHardware = false; // opt-in until tested on the user's GPU/driver
 static bool g_favoritesOnly = false, g_sortName = false, g_optRotation = false, g_optBatteryFps = false;
 static RotationClock g_rotationClock;
+static int g_rotationMinutes = 15;
 static bool g_hasUserPreset = false;
 static VideoEdit g_userPreset;
 static HPOWERNOTIFY g_displayNotify = nullptr;
@@ -286,13 +287,33 @@ static bool LoadMF() {
 }
 
 // ------------------------------------------------------------------ config
+// Version 2 has a completion marker. Version 1 remains readable for upgrades.
+static bool ReadValidConfig(const std::wstring& path, std::string& data) {
+    HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
+    if (f==INVALID_HANDLE_VALUE) return false;
+    data.clear(); char buffer[4096]; DWORD n=0; bool ok=true;
+    for (;;) {
+        if (!ReadFile(f,buffer,sizeof(buffer),&n,nullptr)) { ok=false; break; }
+        if (!n) break;
+        if (data.size()+n > 16u*1024u*1024u) { ok=false; break; }
+        data.append(buffer,n);
+    }
+    CloseHandle(f);
+    if (!ok) return false;
+    bool v1=data.rfind("version=1\r\n",0)==0 || data.rfind("version=1\n",0)==0;
+    bool v2=data.rfind("version=2\r\n",0)==0 || data.rfind("version=2\n",0)==0;
+    bool end=(data.size()>=7 && data.compare(data.size()-7,7,"end=1\r\n")==0) ||
+             (data.size()>=6 && data.compare(data.size()-6,6,"end=1\n")==0);
+    return v1 || (v2 && end);
+}
 static void SaveConfig() {
-    std::string s = "version=1\r\n";
+    std::string s = "version=2\r\n";
     s += std::string("fspause=") + (g_optFsPause ? "1" : "0") + "\r\n";
     s += std::string("ecopause=") + (g_optEcoPause ? "1" : "0") + "\r\n";
     s += std::string("hardware=") + (g_optHardware ? "1" : "0") + "\r\n";
     s += std::string("sortname=") + (g_sortName ? "1" : "0") + "\r\n";
     s += std::string("rotate=") + (g_optRotation ? "1" : "0") + "\r\n";
+    s += "rotateminutes=" + std::to_string(g_rotationMinutes) + "\r\n";
     s += std::string("batteryfps=") + (g_optBatteryFps ? "1" : "0") + "\r\n";
     if (g_hasUserPreset) s += "preset=" + std::to_string(g_userPreset.brightness) + "|" +
         std::to_string(g_userPreset.contrast) + "|" + std::to_string(g_userPreset.saturation) + "|" +
@@ -314,6 +335,7 @@ static void SaveConfig() {
         s += "fx=" + std::to_string(e.gamma) + "|" + std::to_string(e.warmth) + "|" +
              std::to_string(e.hue) + "|" + std::to_string((int)e.invert) + "|" + WToU8(it.path) + "\r\n";
     }
+    s += "end=1\r\n";
     // Write a complete replacement before touching the previous settings file.
     // A crash or full disk must not silently erase the user's library.
     const std::wstring dir = ConfigDir();
@@ -325,7 +347,18 @@ static void SaveConfig() {
     bool ok = s.size() <= MAXDWORD && WriteFile(f, s.data(), (DWORD)s.size(), &n, nullptr) && n == s.size();
     if (ok) ok = FlushFileBuffers(f) != FALSE;
     CloseHandle(f);
-    if (ok) ok = MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    if (ok) {
+        // Keep the last complete version, never promote a truncated file to backup.
+        std::string previous;
+        if (ReadValidConfig(dst, previous)) {
+            const std::wstring backupTmp=dir+L"\\config.bak.tmp", backup=dir+L"\\config.bak";
+            if (CopyFileW(dst.c_str(), backupTmp.c_str(), FALSE)) {
+                if (!MoveFileExW(backupTmp.c_str(), backup.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                    DeleteFileW(backupTmp.c_str());
+            }
+        }
+        ok = MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    }
     if (!ok) { Log(L"config: failed to save settings (%lu)", GetLastError()); DeleteFileW(tmp.c_str()); }
 }
 static void QueueThumb(const std::wstring& p) {
@@ -353,14 +386,12 @@ static int AddItem(const std::wstring& p, int vol = 100, int fit = 0) {
 }
 static std::wstring LoadConfig() {  // returns path of the wallpaper that was active
     std::wstring active, selected;
-    HANDLE f = CreateFileW((ConfigDir() + L"\\config.txt").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                           OPEN_EXISTING, 0, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return active;
     std::string s;
-    char buf[4096];
-    DWORD n = 0;
-    while (ReadFile(f, buf, sizeof(buf), &n, nullptr) && n) s.append(buf, n);
-    CloseHandle(f);
+    const std::wstring dir=ConfigDir();
+    if (!ReadValidConfig(dir+L"\\config.txt",s)) {
+        if (!ReadValidConfig(dir+L"\\config.bak",s)) return active;
+        Log(L"config: recovered previous settings from backup");
+    }
     size_t pos = 0;
     while (pos < s.size()) {
         size_t e = s.find('\n', pos);
@@ -376,6 +407,7 @@ static std::wstring LoadConfig() {  // returns path of the wallpaper that was ac
         else if (key == "hardware") g_optHardware = (val == "1");
         else if (key == "sortname") g_sortName = (val == "1");
         else if (key == "rotate") g_optRotation = (val == "1");
+        else if (key == "rotateminutes") g_rotationMinutes = std::clamp(atoi(val.c_str()), 1, 1440);
         else if (key == "batteryfps") g_optBatteryFps = (val == "1");
         else if (key == "preset") {
             VideoEdit e; int invert=0;
@@ -2721,8 +2753,13 @@ static void PaintAll(HDC dc, int W, int H) {
     y += S(26);
     Checkbox(dc, px, y, pw, ID_ECOPAUSE, L"Пауза: батарея / блокировка / экран", g_optEcoPause);
     y += S(26);
-    Checkbox(dc, px, y, pw, ID_ROTATE, L"Менять обои каждые 15 минут", g_optRotation);
-    y += S(26);
+    wchar_t rotationLabel[80];
+    if (g_optRotation) _snwprintf(rotationLabel, 79, L"Автосмена: %d мин ▾", g_rotationMinutes);
+    else _snwprintf(rotationLabel, 79, L"Автосмена: выключена ▾");
+    rotationLabel[79]=0;
+    RECT rotationButton = {px, y, px + pw, y + S(30)};
+    Button(dc, rotationButton, ID_ROTATE, rotationLabel, IC_NONE, false);
+    y += S(36);
     Checkbox(dc, px, y, pw, ID_BATTERY_FPS, L"30 кадров/с от батареи", g_optBatteryFps);
     y += S(26);
     Checkbox(dc, px, y, pw, ID_GPU, L"GPU-декодирование (эксперимент)", g_optHardware);
@@ -2932,8 +2969,21 @@ static void Command(HWND h, int id) {
         g_favoritesOnly = !g_favoritesOnly; g_scroll = 0; InvalidateRect(h, nullptr, FALSE); break;
     case ID_SORT:
         g_sortName = !g_sortName; g_scroll = 0; SaveConfig(); InvalidateRect(h, nullptr, FALSE); break;
-    case ID_ROTATE:
-        g_optRotation = !g_optRotation; g_rotationClock.reset(); SaveConfig(); InvalidateRect(h, nullptr, FALSE); break;
+    case ID_ROTATE: {
+        HMENU menu=CreatePopupMenu(); if (!menu) break;
+        const wchar_t* labels[]={L"Выключена",L"Каждые 5 минут",L"Каждые 15 минут",L"Каждые 30 минут",L"Каждый час",L"Каждые 3 часа"};
+        const int mins[]={0,5,15,30,60,180};
+        for(int i=0;i<6;++i) AppendMenuW(menu,MF_STRING | ((!g_optRotation && i==0) || (g_optRotation && g_rotationMinutes==mins[i]) ? MF_CHECKED : 0),i+1,labels[i]);
+        POINT pt; GetCursorPos(&pt);
+        int choice=(int)TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY,pt.x,pt.y,0,h,nullptr);
+        DestroyMenu(menu);
+        if (choice>=1 && choice<=6) {
+            g_optRotation=choice!=1;
+            if (g_optRotation) g_rotationMinutes=mins[choice-1];
+            g_rotationClock.reset(); SaveConfig(); InvalidateRect(h,nullptr,FALSE);
+        }
+        break;
+    }
     case ID_BATTERY_FPS:
         g_optBatteryFps = !g_optBatteryFps;
         if (!g_optBatteryFps) p_fpsLimit = 0;
@@ -3245,7 +3295,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                 InvalidateRect(h, nullptr, FALSE);
             }
             bool rotationBlocked = g_active < 0 || g_pendingAction || g_editor || p_userPause.load() || p_autoPause.load();
-            if (g_rotationClock.tick(GetTickCount64(), g_optRotation, rotationBlocked, 15ULL * 60 * 1000)) {
+            if (g_rotationClock.tick(GetTickCount64(), g_optRotation, rotationBlocked, (uint64_t)g_rotationMinutes * 60 * 1000)) {
                 int next = NextPlayable(g_items.size(), g_active, [](size_t i) { return FileExists(g_items[i].path); });
                 if (next >= 0) StartWallpaper(next);
             }
