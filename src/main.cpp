@@ -336,6 +336,8 @@ static void SaveConfig() {
              std::to_string(e.hue) + "|" + std::to_string((int)e.invert) + "|" + WToU8(it.path) + "\r\n";
     }
     s += "end=1\r\n";
+    // Never write a configuration that our bounded reader would refuse later.
+    if (s.size() > 16u*1024u*1024u) { Log(L"config: settings exceed 16 MiB; previous file kept"); return; }
     // Write a complete replacement before touching the previous settings file.
     // A crash or full disk must not silently erase the user's library.
     const std::wstring dir = ConfigDir();
