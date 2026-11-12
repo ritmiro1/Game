@@ -2487,7 +2487,8 @@ static void PaintAll(HDC dc, int W, int H) {
     for (int i = 0; i < (int)g_items.size(); i++)
         if ((!g_favoritesOnly || g_items[(size_t)i].favorite) && ContainsNoCase(g_items[(size_t)i].name, g_filter)) vis.push_back(i);
     if (g_sortName) std::stable_sort(vis.begin(), vis.end(), [](int a, int b) {
-        return _wcsicmp(g_items[(size_t)a].name.c_str(), g_items[(size_t)b].name.c_str()) < 0;
+        return CompareStringOrdinal(g_items[(size_t)a].name.c_str(), -1,
+                                    g_items[(size_t)b].name.c_str(), -1, TRUE) == CSTR_LESS_THAN;
     });
     const int gap = S(16), gw = (int)(rg.right - rg.left) - S(8);
     const int cols = std::max(1, (gw - gap) / (S(190) + gap));
