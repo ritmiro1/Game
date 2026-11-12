@@ -1,0 +1,86 @@
+{
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "source_dimensions": [
+    480,
+    636
+  ],
+  "frames": 1518,
+  "fps": 30,
+  "video_offset_seconds": 0.06665555555555557,
+  "test_only": false,
+  "gray_world_bgr_means": [
+    0.597818846692814,
+    0.43254119329063784,
+    0.7155530301334848
+  ],
+  "bounded_bgr_gains": [
+    0.99,
+    1.01,
+    0.99
+  ],
+  "software": {
+    "opencv": "5.0.0",
+    "numpy": "2.4.6",
+    "ffmpeg": "ffmpeg version n9.0.2-17-g2a571b6068-20260930 Copyright (c) 2000-2026 the FFmpeg developers",
+    "commit": "f0814fec05906b8c38a748f6847a4659b93cc29f"
+  },
+  "multiframe": {
+    "window": 3,
+    "scale": 2,
+    "iterations": 2,
+    "max_luma_change_vs_cubic_8bit": 3,
+    "generative_model": false
+  },
+  "limitations": [
+    "The only available source is 480x636. A less compressed original was not found or fabricated.",
+    "Comparison stages 02-09 isolate methods, not successive generations of lossy re-encoding.",
+    "Subpixel reconstruction uses neighboring observations, with motion and occlusion rejection. It is experimental, not verified recovery of missing detail.",
+    "Estimated blur and gray-world color correction can be wrong; those effects are bounded and isolated for comparison.",
+    "No external scene content, new anatomy, new actions or intermediate frames were generated.",
+    "Resolution, sharpness metrics and successful decoding do not prove improved perceptual quality.",
+    "Device playback speed has not been measured. Use a 720p copy if 4K is slow."
+  ],
+  "render_seconds": 621.485,
+  "uncompressed_difference_metrics_not_quality_scores": {
+    "01-reference": {
+      "mean_absolute_change_8bit": 0.0,
+      "largest_change_8bit": 0.0
+    },
+    "02-multiframe": {
+      "mean_absolute_change_8bit": 0.08949,
+      "largest_change_8bit": 6.0
+    },
+    "03-deblock": {
+      "mean_absolute_change_8bit": 0.06389,
+      "largest_change_8bit": 3.0
+    },
+    "04-motion-denoise": {
+      "mean_absolute_change_8bit": 0.15134,
+      "largest_change_8bit": 6.0
+    },
+    "05-chroma": {
+      "mean_absolute_change_8bit": 0.06135,
+      "largest_change_8bit": 3.0
+    },
+    "06-deblur": {
+      "mean_absolute_change_8bit": 0.04394,
+      "largest_change_8bit": 3.0
+    },
+    "07-adaptive-sharp": {
+      "mean_absolute_change_8bit": 0.04114,
+      "largest_change_8bit": 3.0
+    },
+    "08-color": {
+      "mean_absolute_change_8bit": 1.48058,
+      "largest_change_8bit": 5.0
+    },
+    "09-stable": {
+      "mean_absolute_change_8bit": 0.04042,
+      "largest_change_8bit": 3.0
+    },
+    "10-balanced": {
+      "mean_absolute_change_8bit": 1.512,
+      "largest_change_8bit": 12.0
+    }
+  }
+}
