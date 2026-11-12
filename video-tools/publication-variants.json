@@ -1,12 +1,14 @@
 {
   "release_tag": "video-variants-20261110-cc989019",
   "release_id": 442896833,
-  "release_url": "https://github.com/ritmiro1/Game/releases/tag/untagged-2141b7db4bf3d18b1d58",
+  "release_url": "https://github.com/ritmiro1/Game/releases/tag/video-variants-20261110-cc989019",
   "run_url": "https://github.com/ritmiro1/Game/actions/runs/43215938068",
   "render_run_url": "https://github.com/ritmiro1/Game/actions/runs/43211973429",
   "render_commit": "f0814fec05906b8c38a748f6847a4659b93cc29f",
   "publication_commit": "f835b32f53c3f83cfb67e727921c97a1f09096d2",
   "verified_asset_count": 17,
   "all_sizes_and_sha256_match": true,
-  "reused_without_reencoding": true
+  "reused_without_reencoding": true,
+  "published": true,
+  "published_at": "2026-11-12T12:15:05Z"
 }

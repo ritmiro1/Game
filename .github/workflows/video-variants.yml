@@ -145,6 +145,19 @@ jobs:
           PY
           gh release edit "$RELEASE_TAG" --draft=false --latest=false \
             --notes-file "$OUTPUT_DIR/VARIANTS-README-RU.md"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$OUTPUT_DIR/published-release.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          folder = Path(os.environ['OUTPUT_DIR'])
+          release = json.loads((folder / 'published-release.json').read_text())
+          assert not release['draft'] and not release['prerelease']
+          assert release['tag_name'] == os.environ['RELEASE_TAG']
+          proof_path = folder / 'publication-variants.json'
+          proof = json.loads(proof_path.read_text())
+          proof.update(release_url=release['html_url'], published=True, published_at=release['published_at'])
+          proof_path.write_text(json.dumps(proof, indent=2) + '\n')
+          PY
       - name: Save only the lightweight preview and small audit files on the session branch
         run: |
           test "$(git branch --show-current)" = "arena/cc989019-game"
