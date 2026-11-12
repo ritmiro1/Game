@@ -41,17 +41,43 @@ jobs:
         run: python -m unittest discover -s video-tools -p 'test_*.py' -v
       - name: Run browser fallback tests
         run: node --test video-tools/player.test.cjs
+      - name: Read render or publication-resume request
+        id: request
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          request = json.loads(Path('video-tools/jobs/variants-20261110.json').read_text())
+          reuse = request.get('reuse_verified_release', False)
+          assert isinstance(reuse, bool)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('reuse=' + str(reuse).lower(), file=output)
+          PY
       - name: Exercise the full pipeline on six silent test frames
+        if: steps.request.outputs.reuse != 'true'
         run: |
           python -u video-tools/enhance_variants.py \
             --source video-tools/input/armorypass-ejoy.mp4 \
             --output-dir /tmp/video-variants-smoke --test-frames 6
       - name: Render all original frames, export and verify every delivery file
+        if: steps.request.outputs.reuse != 'true'
         run: |
           python -u video-tools/enhance_variants.py \
             --source video-tools/input/armorypass-ejoy.mp4 \
             --output-dir "$OUTPUT_DIR"
+      - name: Restore and fully reverify existing delivery files without re-encoding
+        if: steps.request.outputs.reuse == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          gh release download "$RELEASE_TAG" --dir "$OUTPUT_DIR"
+          render_commit=$(python -c "import json; print(json.load(open('video-tools/jobs/variants-20261110.json'))['render_commit'])")
+          python -u video-tools/verify_existing_variants.py \
+            --folder "$OUTPUT_DIR" --source video-tools/input/armorypass-ejoy.mp4 \
+            --render-commit "$render_commit"
       - name: Upload verified assets to a separate draft release
+        if: steps.request.outputs.reuse != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -83,7 +109,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$OUTPUT_DIR/release-assets.json"
+          # The by-tag endpoint only resolves published releases, not drafts.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$OUTPUT_DIR/releases-list.json"
+          release_id=$(python - <<'PY'
+          import json, os
+          from pathlib import Path
+          releases = json.loads((Path(os.environ['OUTPUT_DIR']) / 'releases-list.json').read_text())
+          matches = [r['id'] for r in releases if r['tag_name'] == os.environ['RELEASE_TAG']]
+          assert len(matches) == 1, matches
+          print(matches[0])
+          PY
+          )
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$OUTPUT_DIR/release-assets.json"
           python - <<'PY'
           import hashlib, json, os
           from pathlib import Path
@@ -99,7 +136,10 @@ jobs:
               assert assets[name]['state'] == 'uploaded', name
               assert assets[name]['size'] == len(data), name
               assert assets[name]['digest'] == 'sha256:' + digest, name
-          proof = {'release_tag': release['tag_name'], 'release_id': release['id'], 'release_url': release['html_url'], 'run_url': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}", 'render_commit': os.environ['GITHUB_SHA'], 'verified_asset_count': len(expected), 'all_sizes_and_sha256_match': True}
+          request = json.loads(Path('video-tools/jobs/variants-20261110.json').read_text())
+          analysis = json.loads((folder / 'render-analysis.json').read_text())
+          render_run = request.get('render_run_id', os.environ['GITHUB_RUN_ID']) if request.get('reuse_verified_release') else os.environ['GITHUB_RUN_ID']
+          proof = {'release_tag': release['tag_name'], 'release_id': release['id'], 'release_url': release['html_url'], 'run_url': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}", 'render_run_url': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{render_run}", 'render_commit': analysis['software']['commit'], 'publication_commit': os.environ['GITHUB_SHA'], 'verified_asset_count': len(expected), 'all_sizes_and_sha256_match': True, 'reused_without_reencoding': request.get('reuse_verified_release', False)}
           (folder / 'publication-variants.json').write_text(json.dumps(proof, indent=2) + '\n')
           print(json.dumps(proof, indent=2))
           PY

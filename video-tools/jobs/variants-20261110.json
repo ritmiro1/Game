@@ -1,5 +1,8 @@
 {
-  "revision": 1,
+  "revision": 2,
+  "reuse_verified_release": true,
+  "render_commit": "f0814fec05906b8c38a748f6847a4659b93cc29f",
+  "render_run_id": 43211973429,
   "source": "video-tools/input/armorypass-ejoy.mp4",
   "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
   "release_tag": "video-variants-20261110-cc989019",
