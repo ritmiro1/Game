@@ -1,0 +1,17 @@
+{
+  "revision": 1,
+  "source": "video-tools/input/armorypass-ejoy.mp4",
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "release_tag": "video-restored-20261110-cc989019",
+  "profile": "strong",
+  "selection": "Highest sample cleanup heuristic among three profiles passing structure and clipping guardrails; not a perceptual quality score",
+  "sample_frame_indexes": [48, 303, 600, 927, 1200, 1485],
+  "temporal_window": 5,
+  "preserve_frames": 1518,
+  "copy_original_aac": true,
+  "generative_model": false,
+  "frame_interpolation": false,
+  "claim_100_fold_improvement": false,
+  "keep_every_existing_version": true,
+  "publish": "Separate GitHub release; only small reports in Git"
+}

@@ -1,0 +1,127 @@
+name: Video - stronger observation-based cleanup
+
+on:
+  push:
+    branches:
+      - arena/cc989019-game
+    paths:
+      - video-tools/jobs/restoration-20261110.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: video-restoration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    name: Test stronger cleanup, preserve source, publish separately
+    if: github.ref == 'refs/heads/arena/cc989019-game'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      OUTPUT_DIR: /tmp/video-restoration
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Stay on the session branch at the triggering revision
+        run: |
+          git checkout -B arena/cc989019-game "$GITHUB_SHA"
+          test "$(git branch --show-current)" = "arena/cc989019-game"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned CPU processing packages
+        run: python -m pip install -r video-tools/requirements.txt
+      - name: Test processing, provenance, publication and existing playback
+        run: |
+          python -m unittest discover -s video-tools -p 'test_*.py' -v
+          node --test video-tools/player.test.cjs
+      - name: Read the explicitly selected job profile
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'video-tools')
+          from restore_strong import PROFILES, RELEASE_TAG, SOURCE_SHA256
+          job = json.loads(Path('video-tools/jobs/restoration-20261110.json').read_text())
+          assert job['source_sha256'] == SOURCE_SHA256 and job['release_tag'] == RELEASE_TAG
+          assert job['profile'] in PROFILES
+          with open(os.environ['GITHUB_ENV'], 'a') as environment:
+              print('RESTORATION_PROFILE=' + job['profile'], file=environment)
+          PY
+      - name: Smoke test the complete pipeline including genuine 4K output
+        run: |
+          python -u video-tools/restore_strong.py \
+            --source video-tools/input/armorypass-ejoy.mp4 \
+            --output-dir /tmp/restoration-smoke --profile "$RESTORATION_PROFILE" --test-frames 6
+      - name: Recheck all three strengths on six full-video sample windows
+        run: |
+          python -u video-tools/restore_strong.py \
+            --source video-tools/input/armorypass-ejoy.mp4 \
+            --output-dir "$OUTPUT_DIR" --profile "$RESTORATION_PROFILE" --stage prepare
+      - name: Process every original frame into a lossless intermediate
+        run: |
+          python -u video-tools/restore_strong.py \
+            --source video-tools/input/armorypass-ejoy.mp4 \
+            --output-dir "$OUTPUT_DIR" --stage render
+      - name: Export compatible 720p, Full HD and 4K with original AAC
+        run: |
+          python -u video-tools/restore_strong.py \
+            --source video-tools/input/armorypass-ejoy.mp4 \
+            --output-dir "$OUTPUT_DIR" --stage exports
+      - name: Fully decode every output and verify frame timing and audio identity
+        run: |
+          python -u video-tools/restore_strong.py \
+            --source video-tools/input/armorypass-ejoy.mp4 \
+            --output-dir "$OUTPUT_DIR" --stage validate
+          python -u video-tools/restore_strong.py \
+            --source video-tools/input/armorypass-ejoy.mp4 \
+            --output-dir "$OUTPUT_DIR" --stage notes
+      - name: Publish a separate release only after sizes and digests match
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -u video-tools/publish_restoration.py \
+            --folder "$OUTPUT_DIR" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
+      - name: Keep only small technical reports in Git, never new large MP4s
+        run: |
+          test "$(git branch --show-current)" = "arena/cc989019-game"
+          cp "$OUTPUT_DIR/restoration-validation.json" downloads/
+          cp "$OUTPUT_DIR/restoration-sample-qa.json" video-tools/
+          cp "$OUTPUT_DIR/restoration-analysis.json" video-tools/
+          cp "$OUTPUT_DIR/publication-restoration.json" video-tools/
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          tracked = {Path(p.decode()) for p in subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0') if p}
+          tracked.update(map(Path, ['downloads/restoration-validation.json', 'video-tools/restoration-sample-qa.json', 'video-tools/restoration-analysis.json', 'video-tools/publication-restoration.json']))
+          total = sum(p.stat().st_size for p in tracked if p.is_file())
+          assert total < 128 * 1024 * 1024, total
+          print('Tracked-file budget:', total)
+          PY
+          git config user.name 'Video processing'
+          git config user.email 'video-tools@users.noreply.github.com'
+          git add downloads/restoration-validation.json video-tools/restoration-sample-qa.json video-tools/restoration-analysis.json video-tools/publication-restoration.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record verified stronger video cleanup and publication"
+            git pull --rebase origin arena/cc989019-game
+            git push origin arena/cc989019-game
+          fi
+      - name: Retain diagnostics without temporary masters
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stronger-restoration-diagnostics
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            ${{ env.OUTPUT_DIR }}/*.json
+            ${{ env.OUTPUT_DIR }}/*.log
+            ${{ env.OUTPUT_DIR }}/*.progress.txt
+            ${{ env.OUTPUT_DIR }}/*.md
+            /tmp/restoration-smoke/*.json
+            /tmp/restoration-smoke/*.log
