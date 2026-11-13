@@ -1,11 +1,14 @@
+from contextlib import redirect_stdout
 import copy
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from optimize_playback import sha256
-from publish_restoration import bundle_files, find_release, verify_assets
+from publish_restoration import bundle_files, find_release, publish, verify_assets
 from restore_strong import EXPORTS, FRAMES, PROFILES, RELEASE_TAG, SAMPLES, SOURCE_SHA256
 
 
@@ -82,6 +85,38 @@ class RestorationPublicationTests(unittest.TestCase):
         self.assertIsNone(find_release(releases, 'unrelated'))
         with self.assertRaises(ValueError):
             find_release(releases * 2, RELEASE_TAG)
+
+    def publication_api(self, path, payload=None, method=None):
+        release_id = 444174965
+        if path.endswith('/releases?per_page=100'):
+            return []  # The cached collection remains stale after creation.
+        if payload is not None and method != 'PATCH':
+            self.assertTrue(payload['draft'])
+            self.assertEqual(payload['make_latest'], 'false')
+            return {'id': release_id, 'tag_name': RELEASE_TAG, 'draft': True}
+        if method == 'PATCH':
+            self.assertFalse(payload['draft'])
+            self.assertEqual(payload['make_latest'], 'false')
+        assets = [{'name': p.name, 'state': 'uploaded', 'size': p.stat().st_size, 'digest': 'sha256:' + sha256(p)} for p in bundle_files(self.folder, self.report)]
+        published = method == 'PATCH'
+        return {'id': release_id, 'tag_name': RELEASE_TAG, 'draft': not published, 'prerelease': False, 'assets': assets, 'html_url': 'https://github.com/ritmiro1/Game/releases/tag/' + RELEASE_TAG, 'published_at': 'fixture-publication-time'}
+
+    def test_creation_uses_post_response_even_when_collection_is_stale(self):
+        with patch('publish_restoration.api', side_effect=self.publication_api) as api, patch('publish_restoration.run_gh', return_value=''), redirect_stdout(io.StringIO()):
+            result = publish(self.folder, 'ritmiro1/Game', 'fixture-render-revision')
+        self.assertTrue(result['published'])
+        self.assertEqual(sum('/releases?per_page=' in call.args[0] for call in api.call_args_list), 1)
+        self.assertTrue(any(len(call.args) == 2 and call.args[1]['draft'] for call in api.call_args_list))
+        self.assertEqual(api.call_args_list[-1].kwargs.get('method'), 'PATCH')
+
+    def test_explicitly_resolved_draft_needs_no_collection_or_creation(self):
+        with patch('publish_restoration.api', side_effect=self.publication_api) as api, patch('publish_restoration.run_gh', return_value=''), redirect_stdout(io.StringIO()):
+            result = publish(self.folder, 'ritmiro1/Game', 'fixture-render-revision', 444174965)
+        self.assertEqual(result['release_id'], 444174965)
+        self.assertEqual(len(api.call_args_list), 2)
+        self.assertEqual(len(api.call_args_list[0].args), 1)
+        self.assertEqual(api.call_args_list[1].kwargs.get('method'), 'PATCH')
+        self.assertFalse(any('/releases?' in call.args[0] for call in api.call_args_list))
 
 
 if __name__ == '__main__':

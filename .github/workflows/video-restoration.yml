@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: video-restoration-${{ github.ref }}
@@ -50,25 +51,41 @@ jobs:
           job = json.loads(Path('video-tools/jobs/restoration-20261110.json').read_text())
           assert job['source_sha256'] == SOURCE_SHA256 and job['release_tag'] == RELEASE_TAG
           assert job['profile'] in PROFILES
+          release_id, reuse_run = job.get('existing_release_id'), job.get('reuse_delivery_run_id')
+          assert release_id is None or (isinstance(release_id, int) and release_id > 0)
+          assert reuse_run is None or (isinstance(reuse_run, int) and reuse_run > 0)
           with open(os.environ['GITHUB_ENV'], 'a') as environment:
               print('RESTORATION_PROFILE=' + job['profile'], file=environment)
+              print('RESTORATION_RELEASE_ID=' + str(release_id or ''), file=environment)
+              print('REUSE_DELIVERY_RUN_ID=' + str(reuse_run or ''), file=environment)
           PY
+      - name: Restore a previously validated delivery artifact when explicitly requested
+        if: env.REUSE_DELIVERY_RUN_ID != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          gh run download "$REUSE_DELIVERY_RUN_ID" --name stronger-restoration-delivery --dir "$OUTPUT_DIR"
       - name: Smoke test the complete pipeline including genuine 4K output
+        if: env.REUSE_DELIVERY_RUN_ID == ''
         run: |
           python -u video-tools/restore_strong.py \
             --source video-tools/input/armorypass-ejoy.mp4 \
             --output-dir /tmp/restoration-smoke --profile "$RESTORATION_PROFILE" --test-frames 6
       - name: Recheck all three strengths on six full-video sample windows
+        if: env.REUSE_DELIVERY_RUN_ID == ''
         run: |
           python -u video-tools/restore_strong.py \
             --source video-tools/input/armorypass-ejoy.mp4 \
             --output-dir "$OUTPUT_DIR" --profile "$RESTORATION_PROFILE" --stage prepare
       - name: Process every original frame into a lossless intermediate
+        if: env.REUSE_DELIVERY_RUN_ID == ''
         run: |
           python -u video-tools/restore_strong.py \
             --source video-tools/input/armorypass-ejoy.mp4 \
             --output-dir "$OUTPUT_DIR" --stage render
       - name: Export compatible 720p, Full HD and 4K with original AAC
+        if: env.REUSE_DELIVERY_RUN_ID == ''
         run: |
           python -u video-tools/restore_strong.py \
             --source video-tools/input/armorypass-ejoy.mp4 \
@@ -81,12 +98,29 @@ jobs:
           python -u video-tools/restore_strong.py \
             --source video-tools/input/armorypass-ejoy.mp4 \
             --output-dir "$OUTPUT_DIR" --stage notes
+      - name: Preserve the complete validated delivery before attempting publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: stronger-restoration-delivery
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            ${{ env.OUTPUT_DIR }}/*.mp4
+            ${{ env.OUTPUT_DIR }}/restoration-validation.json
+            ${{ env.OUTPUT_DIR }}/restoration-sample-qa.json
+            ${{ env.OUTPUT_DIR }}/restoration-analysis.json
+            ${{ env.OUTPUT_DIR }}/RESTORATION-README-RU.md
       - name: Publish a separate release only after sizes and digests match
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          extra=()
+          if test -n "$RESTORATION_RELEASE_ID"; then
+            extra+=(--existing-release-id "$RESTORATION_RELEASE_ID")
+          fi
           python -u video-tools/publish_restoration.py \
-            --folder "$OUTPUT_DIR" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
+            --folder "$OUTPUT_DIR" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" "${extra[@]}"
       - name: Keep only small technical reports in Git, never new large MP4s
         run: |
           test "$(git branch --show-current)" = "arena/cc989019-game"

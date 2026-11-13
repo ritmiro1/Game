@@ -1,5 +1,7 @@
 {
-  "revision": 1,
+  "revision": 2,
+  "existing_release_id": 444174965,
+  "recovery_note": "Run 43419369814 completed full rendering and validation but its runner was discarded after a stale draft lookup. Re-render once with authoritative POST/PATCH responses and preserve a validated recovery artifact before publishing.",
   "source": "video-tools/input/armorypass-ejoy.mp4",
   "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
   "release_tag": "video-restored-20261110-cc989019",
