@@ -1,0 +1,41 @@
+{
+  "release_id": 444174965,
+  "release_tag": "video-restored-20261110-cc989019",
+  "release_url": "https://github.com/ritmiro1/Game/releases/tag/video-restored-20261110-cc989019",
+  "published": true,
+  "published_at": "2026-11-13T12:22:52Z",
+  "render_commit": "0ac64e72ea452c8ba131bbe59e97240b28f9ca6c",
+  "publication_commit": "0ac64e72ea452c8ba131bbe59e97240b28f9ca6c",
+  "run_url": "https://github.com/ritmiro1/Game/actions/runs/43422554903",
+  "verified_assets": {
+    "armorypass-ejoy-restored-watch-720p.mp4": {
+      "size": 4091539,
+      "sha256": "28ead1918cf04605463d12786848d1e34b45e4f39ef3942b632f0b0f816bc770"
+    },
+    "armorypass-ejoy-restored-1080p.mp4": {
+      "size": 17362907,
+      "sha256": "3cc7058fd1554ab47a2c7125e2cab45041207269b8bb553ec3bf89a221ff6d7b"
+    },
+    "armorypass-ejoy-restored-4k.mp4": {
+      "size": 96036032,
+      "sha256": "67fe43fe97102e250ba4baccde3abfdb5f945feeb6b14674ad8e8d263446be81"
+    },
+    "restoration-validation.json": {
+      "size": 3209,
+      "sha256": "0e8b8df4fd3276ba6d0462f094611fefd81f39b67b64889a015f67c41459f4d0"
+    },
+    "restoration-sample-qa.json": {
+      "size": 11293,
+      "sha256": "4a022f541f2a0fd6cb9d1726343d39903d59fd8cb61b631f5d01bd0cad8904e5"
+    },
+    "restoration-analysis.json": {
+      "size": 1739,
+      "sha256": "bef5fb60ff584da032df0a934ee82321e91a41c83e228ada0f092abb1aea8fa9"
+    },
+    "RESTORATION-README-RU.md": {
+      "size": 2847,
+      "sha256": "17e92e00a86a569ea31db7301e73051a02b4dc8e97e00442cf727feb1005569a"
+    }
+  },
+  "all_sizes_and_sha256_match": true
+}

@@ -1,0 +1,250 @@
+{
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "test_only": false,
+  "sample_frame_indexes": [
+    48,
+    303,
+    600,
+    927,
+    1200,
+    1485
+  ],
+  "selected_profile": "strong",
+  "selected_parameters": {
+    "temporal": 1.6,
+    "temporal_cap": 8,
+    "nlm_h": 5.0,
+    "spatial_blend": 1.0,
+    "guided_sigma": 3.0,
+    "deblock": 2.7,
+    "chroma": 0.85,
+    "luma_cap": 16,
+    "chroma_cap": 5
+  },
+  "candidate_summary": {
+    "moderate": {
+      "median_flat_high_frequency_reduction": 0.46080818586591765,
+      "median_strong_edge_retention": 1.0000200867652893,
+      "minimum_strong_edge_retention": 0.9957200884819031,
+      "maximum_mean_luma_change_8bit": 0.6453489661216736,
+      "maximum_clipping_increase": -0.00044112508735150244,
+      "guardrails_passed": true,
+      "selection_heuristic_not_quality_score": 0.46080818586591765
+    },
+    "clean": {
+      "median_flat_high_frequency_reduction": 0.5648298609790511,
+      "median_strong_edge_retention": 0.9852069616317749,
+      "minimum_strong_edge_retention": 0.980443000793457,
+      "maximum_mean_luma_change_8bit": 0.82955002784729,
+      "maximum_clipping_increase": -0.0007206498951781972,
+      "guardrails_passed": true,
+      "selection_heuristic_not_quality_score": 0.5544747341212936
+    },
+    "strong": {
+      "median_flat_high_frequency_reduction": 0.6319600919764374,
+      "median_strong_edge_retention": 0.9681057631969452,
+      "minimum_strong_edge_retention": 0.9629180431365967,
+      "maximum_mean_luma_change_8bit": 0.98069167137146,
+      "maximum_clipping_increase": -0.0008407582110412298,
+      "guardrails_passed": true,
+      "selection_heuristic_not_quality_score": 0.609634126214299
+    }
+  },
+  "candidate_samples": {
+    "moderate": [
+      {
+        "flat_high_frequency_rms_before_8bit": 0.4035313701024279,
+        "flat_high_frequency_rms_after_8bit": 0.21860498614842072,
+        "flat_high_frequency_reduction": 0.4582701560651097,
+        "strong_edge_gradient_retention": 1.0092957019805908,
+        "mean_luma_change_8bit": 0.593961775302887,
+        "max_luma_change_8bit": 7.812191009521484,
+        "rgb_clipping_fraction_increase": -0.00044112508735150244,
+        "source_frame_index": 48
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3602597373537719,
+        "flat_high_frequency_rms_after_8bit": 0.19538088468834758,
+        "flat_high_frequency_reduction": 0.45766660986463426,
+        "strong_edge_gradient_retention": 1.0069648027420044,
+        "mean_luma_change_8bit": 0.5482190251350403,
+        "max_luma_change_8bit": 7.858715534210205,
+        "rgb_clipping_fraction_increase": -0.0005328441649196365,
+        "source_frame_index": 303
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3441857092548162,
+        "flat_high_frequency_rms_after_8bit": 0.17358897981466725,
+        "flat_high_frequency_reduction": 0.4956531455344315,
+        "strong_edge_gradient_retention": 0.9957200884819031,
+        "mean_luma_change_8bit": 0.6198346614837646,
+        "max_luma_change_8bit": 6.9572062492370605,
+        "rgb_clipping_fraction_increase": -0.0007337526205450734,
+        "source_frame_index": 600
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.42334698024205863,
+        "flat_high_frequency_rms_after_8bit": 0.2271907590329647,
+        "flat_high_frequency_reduction": 0.4633462156667256,
+        "strong_edge_gradient_retention": 0.9996558427810669,
+        "mean_luma_change_8bit": 0.556632399559021,
+        "max_luma_change_8bit": 6.7023234367370605,
+        "rgb_clipping_fraction_increase": -0.0005481306778476589,
+        "source_frame_index": 927
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3638003161177039,
+        "flat_high_frequency_rms_after_8bit": 0.18187508831033483,
+        "flat_high_frequency_reduction": 0.500068910738684,
+        "strong_edge_gradient_retention": 0.9969331622123718,
+        "mean_luma_change_8bit": 0.6453489661216736,
+        "max_luma_change_8bit": 7.999999523162842,
+        "rgb_clipping_fraction_increase": -0.000553590146750524,
+        "source_frame_index": 1200
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.38494986249133945,
+        "flat_high_frequency_rms_after_8bit": 0.20869727013632655,
+        "flat_high_frequency_reduction": 0.4578585668646088,
+        "strong_edge_gradient_retention": 1.0003843307495117,
+        "mean_luma_change_8bit": 0.5483516454696655,
+        "max_luma_change_8bit": 7.678620338439941,
+        "rgb_clipping_fraction_increase": -0.00054485499650594,
+        "source_frame_index": 1485
+      }
+    ],
+    "clean": [
+      {
+        "flat_high_frequency_rms_before_8bit": 0.4035313701024279,
+        "flat_high_frequency_rms_after_8bit": 0.1847955581615679,
+        "flat_high_frequency_reduction": 0.5420540462203436,
+        "strong_edge_gradient_retention": 0.997963547706604,
+        "mean_luma_change_8bit": 0.7702242732048035,
+        "max_luma_change_8bit": 10.211328506469727,
+        "rgb_clipping_fraction_increase": -0.0007206498951781972,
+        "source_frame_index": 48
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3602597373537719,
+        "flat_high_frequency_rms_after_8bit": 0.16282553784549236,
+        "flat_high_frequency_reduction": 0.5480329302366667,
+        "strong_edge_gradient_retention": 0.9947681427001953,
+        "mean_luma_change_8bit": 0.7329849600791931,
+        "max_luma_change_8bit": 8.969380378723145,
+        "rgb_clipping_fraction_increase": -0.0008811582809224319,
+        "source_frame_index": 303
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3441857092548162,
+        "flat_high_frequency_rms_after_8bit": 0.14308059500763193,
+        "flat_high_frequency_reduction": 0.5842924585177854,
+        "strong_edge_gradient_retention": 0.980443000793457,
+        "mean_luma_change_8bit": 0.8013185858726501,
+        "max_luma_change_8bit": 9.280842781066895,
+        "rgb_clipping_fraction_increase": -0.0010296558350803633,
+        "source_frame_index": 600
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.42334698024205863,
+        "flat_high_frequency_rms_after_8bit": 0.1817061161273159,
+        "flat_high_frequency_reduction": 0.5707867904870347,
+        "strong_edge_gradient_retention": 0.983878493309021,
+        "mean_luma_change_8bit": 0.7552388906478882,
+        "max_luma_change_8bit": 9.048439025878906,
+        "rgb_clipping_fraction_increase": -0.0008538609364081062,
+        "source_frame_index": 927
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3638003161177039,
+        "flat_high_frequency_rms_after_8bit": 0.1483113260474056,
+        "flat_high_frequency_reduction": 0.5923276603217107,
+        "strong_edge_gradient_retention": 0.9824652075767517,
+        "mean_luma_change_8bit": 0.82955002784729,
+        "max_luma_change_8bit": 9.83926010131836,
+        "rgb_clipping_fraction_increase": -0.0007413958770090844,
+        "source_frame_index": 1200
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.38494986249133945,
+        "flat_high_frequency_rms_after_8bit": 0.1698118043714203,
+        "flat_high_frequency_reduction": 0.5588729314710674,
+        "strong_edge_gradient_retention": 0.9865354299545288,
+        "mean_luma_change_8bit": 0.7388536930084229,
+        "max_luma_change_8bit": 8.549108505249023,
+        "rgb_clipping_fraction_increase": -0.0008014500349406011,
+        "source_frame_index": 1485
+      }
+    ],
+    "strong": [
+      {
+        "flat_high_frequency_rms_before_8bit": 0.4035313701024279,
+        "flat_high_frequency_rms_after_8bit": 0.16287821548758075,
+        "flat_high_frequency_reduction": 0.5963678971321671,
+        "strong_edge_gradient_retention": 0.9842033386230469,
+        "mean_luma_change_8bit": 0.9215054512023926,
+        "max_luma_change_8bit": 11.103012084960938,
+        "rgb_clipping_fraction_increase": -0.0009805206149545772,
+        "source_frame_index": 48
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3602597373537719,
+        "flat_high_frequency_rms_after_8bit": 0.14137218589894474,
+        "flat_high_frequency_reduction": 0.6075826098765,
+        "strong_edge_gradient_retention": 0.9801040887832642,
+        "mean_luma_change_8bit": 0.8936333060264587,
+        "max_luma_change_8bit": 9.941315650939941,
+        "rgb_clipping_fraction_increase": -0.0011159154437456323,
+        "source_frame_index": 303
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3441857092548162,
+        "flat_high_frequency_rms_after_8bit": 0.12156661701737903,
+        "flat_high_frequency_reduction": 0.6467993477109248,
+        "strong_edge_gradient_retention": 0.9629180431365967,
+        "mean_luma_change_8bit": 0.953128457069397,
+        "max_luma_change_8bit": 12.596126556396484,
+        "rgb_clipping_fraction_increase": -0.0011912561146051712,
+        "source_frame_index": 600
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.42334698024205863,
+        "flat_high_frequency_rms_after_8bit": 0.15308812988223508,
+        "flat_high_frequency_reduction": 0.638386153611623,
+        "strong_edge_gradient_retention": 0.9657392501831055,
+        "mean_luma_change_8bit": 0.922361433506012,
+        "max_luma_change_8bit": 9.885807991027832,
+        "rgb_clipping_fraction_increase": -0.0010067260656883299,
+        "source_frame_index": 927
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.3638003161177039,
+        "flat_high_frequency_rms_after_8bit": 0.12718916492303833,
+        "flat_high_frequency_reduction": 0.6503874260464151,
+        "strong_edge_gradient_retention": 0.9660800099372864,
+        "mean_luma_change_8bit": 0.98069167137146,
+        "max_luma_change_8bit": 10.319060325622559,
+        "rgb_clipping_fraction_increase": -0.0008407582110412298,
+        "source_frame_index": 1200
+      },
+      {
+        "flat_high_frequency_rms_before_8bit": 0.38494986249133945,
+        "flat_high_frequency_rms_after_8bit": 0.14415062352782115,
+        "flat_high_frequency_reduction": 0.625534030341252,
+        "strong_edge_gradient_retention": 0.970131516456604,
+        "mean_luma_change_8bit": 0.8979579210281372,
+        "max_luma_change_8bit": 9.201623916625977,
+        "rgb_clipping_fraction_increase": -0.00092374213836478,
+        "source_frame_index": 1485
+      }
+    ]
+  },
+  "limitations": [
+    "A 100-fold quality improvement is neither defined nor measured. No such claim is made.",
+    "Only the supplied 480x636 source is available. Missing authentic detail cannot be guaranteed to be recovered.",
+    "Five-frame optical-flow fusion rejects mismatches and occlusions, but motion estimation can still be wrong.",
+    "Stronger denoising can soften real texture. Sample metrics are guardrails, not perceptual quality scores or proof of improvement.",
+    "Blur correction uses an estimated kernel; source white balance and exposure are not automatically changed.",
+    "4K is the coded canvas size, not native 4K detail. No new anatomy, actions, scene extensions or intermediate frames are generated.",
+    "Playback performance on the user device has not been measured; use 720p rather than 4K if playback is slow."
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "frames": 1518,
+  "test_only": false,
+  "profile": "strong",
+  "parameters": {
+    "temporal": 1.6,
+    "temporal_cap": 8,
+    "nlm_h": 5.0,
+    "spatial_blend": 1.0,
+    "guided_sigma": 3.0,
+    "deblock": 2.7,
+    "chroma": 0.85,
+    "luma_cap": 16,
+    "chroma_cap": 5
+  },
+  "temporal_window": 5,
+  "lossless_intermediate": "FFV1 RGB, 960x1272, coder 0",
+  "mean_native_luma_change_8bit": 0.8483357106744065,
+  "maximum_frame_mean_luma_change_8bit": 0.9523863792419434,
+  "mean_motion_confidence": 0.9406873293230813,
+  "render_seconds": 491.704136462,
+  "render_commit": "0ac64e72ea452c8ba131bbe59e97240b28f9ca6c",
+  "software": {
+    "opencv": "5.0.0",
+    "numpy": "2.4.6",
+    "ffmpeg": "ffmpeg version n9.0.2-17-g2a571b6068-20260930 Copyright (c) 2000-2026 the FFmpeg developers"
+  },
+  "limitations": [
+    "A 100-fold quality improvement is neither defined nor measured. No such claim is made.",
+    "Only the supplied 480x636 source is available. Missing authentic detail cannot be guaranteed to be recovered.",
+    "Five-frame optical-flow fusion rejects mismatches and occlusions, but motion estimation can still be wrong.",
+    "Stronger denoising can soften real texture. Sample metrics are guardrails, not perceptual quality scores or proof of improvement.",
+    "Blur correction uses an estimated kernel; source white balance and exposure are not automatically changed.",
+    "4K is the coded canvas size, not native 4K detail. No new anatomy, actions, scene extensions or intermediate frames are generated.",
+    "Playback performance on the user device has not been measured; use 720p rather than 4K if playback is slow."
+  ]
+}
