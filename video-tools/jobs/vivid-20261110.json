@@ -1,0 +1,19 @@
+{
+  "revision": 1,
+  "source": "video-tools/input/armorypass-ejoy.mp4",
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "release_tag": "video-vivid-120k-20261110-cc989019",
+  "distinct_parameter_candidates": 120000,
+  "attempt_definition": "Actually evaluated distinct global grades on twelve stratified 16x21 source-pixel grids, not full video renders or human reviews",
+  "sample_frame_indexes": [30, 165, 300, 435, 570, 705, 840, 975, 1110, 1245, 1380, 1485],
+  "native_size_finalist_recheck": true,
+  "cleanup_profile": "strong",
+  "one_constant_grade_no_pumping": true,
+  "copy_original_aac": true,
+  "preserve_frames": 1518,
+  "generative_model": false,
+  "frame_interpolation": false,
+  "keep_every_existing_version": true,
+  "ranking_is_preference_heuristic_not_objective_quality": true,
+  "publish": "Separate GitHub release, including an NPZ archive of all actual parameter evaluations. No new large MP4 or NPZ in Git"
+}

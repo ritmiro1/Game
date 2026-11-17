@@ -1,0 +1,157 @@
+name: Video - 120000 vivid color trials
+
+on:
+  push:
+    branches:
+      - arena/cc989019-game
+    paths:
+      - video-tools/jobs/vivid-20261110.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: video-vivid-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  vivid:
+    name: Evaluate 120000 grades and publish a separate vivid video
+    if: github.ref == 'refs/heads/arena/cc989019-game'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      OUTPUT_DIR: /tmp/video-vivid
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Stay on the session branch at the exact triggering revision
+        run: |
+          git checkout -B arena/cc989019-game "$GITHUB_SHA"
+          test "$(git branch --show-current)" = "arena/cc989019-game"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned CPU processing packages
+        run: python -m pip install -r video-tools/requirements.txt
+      - name: Test color math, actual search evidence, publication and existing player
+        run: |
+          python -m unittest discover -s video-tools -p 'test_*.py' -v
+          node --test video-tools/player.test.cjs
+      - name: Check the requested real search count and optional recovery IDs
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'video-tools')
+          import vivid_search as vivid
+          job = json.loads(Path('video-tools/jobs/vivid-20261110.json').read_text())
+          assert job['source_sha256'] == vivid.base.SOURCE_SHA256 and job['release_tag'] == vivid.RELEASE_TAG
+          assert job['distinct_parameter_candidates'] == vivid.CANDIDATES == 120000
+          assert job['sample_frame_indexes'] == list(vivid.SAMPLES)
+          assert job['cleanup_profile'] == 'strong' and job['copy_original_aac']
+          for field, variable in [('existing_release_id','VIVID_RELEASE_ID'),('reuse_delivery_run_id','REUSE_DELIVERY_RUN_ID')]:
+              value = job.get(field)
+              assert value is None or (isinstance(value,int) and value > 0)
+              with open(os.environ['GITHUB_ENV'],'a') as environment:
+                  print(variable+'='+str(value or ''),file=environment)
+          PY
+      - name: Restore an explicitly selected validated delivery artifact if needed
+        if: env.REUSE_DELIVERY_RUN_ID != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          gh run download "$REUSE_DELIVERY_RUN_ID" --name vivid-120k-delivery --dir "$OUTPUT_DIR"
+      - name: Smoke test complete grading and all three exports, including 4K
+        if: env.REUSE_DELIVERY_RUN_ID == ''
+        run: |
+          python -u video-tools/render_vivid.py \
+            --source video-tools/input/armorypass-ejoy.mp4 --output-dir /tmp/vivid-smoke \
+            --test-frames 6 --test-candidates 384
+      - name: Actually evaluate 120000 unique color settings and native-size finalists
+        if: env.REUSE_DELIVERY_RUN_ID == ''
+        run: |
+          python -u video-tools/render_vivid.py \
+            --source video-tools/input/armorypass-ejoy.mp4 --output-dir "$OUTPUT_DIR" --stage search
+      - name: Rebuild the five-frame lossless cleanup master from the original
+        if: env.REUSE_DELIVERY_RUN_ID == ''
+        run: |
+          python -u video-tools/render_vivid.py \
+            --source video-tools/input/armorypass-ejoy.mp4 --output-dir "$OUTPUT_DIR" --stage cleanup
+      - name: Apply one fixed grade and independently export 720p, Full HD and 4K
+        if: env.REUSE_DELIVERY_RUN_ID == ''
+        run: |
+          python -u video-tools/render_vivid.py \
+            --source video-tools/input/armorypass-ejoy.mp4 --output-dir "$OUTPUT_DIR" --stage exports
+      - name: Fully decode every output and verify all frames, timing and original AAC
+        run: |
+          python -u video-tools/render_vivid.py \
+            --source video-tools/input/armorypass-ejoy.mp4 --output-dir "$OUTPUT_DIR" --stage validate
+          python -u video-tools/render_vivid.py \
+            --source video-tools/input/armorypass-ejoy.mp4 --output-dir "$OUTPUT_DIR" --stage notes
+      - name: Preserve every final file and actual search evidence before publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: vivid-120k-delivery
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            ${{ env.OUTPUT_DIR }}/*.mp4
+            ${{ env.OUTPUT_DIR }}/*.npz
+            ${{ env.OUTPUT_DIR }}/*.json
+            ${{ env.OUTPUT_DIR }}/VIVID-README-RU.md
+      - name: Publish only after all eight asset sizes and SHA256 digests match
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          extra=()
+          if test -n "$VIVID_RELEASE_ID"; then
+            extra+=(--existing-release-id "$VIVID_RELEASE_ID")
+          fi
+          python -u video-tools/publish_vivid.py \
+            --folder "$OUTPUT_DIR" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" "${extra[@]}"
+      - name: Keep only small reports in Git and retain all old media
+        run: |
+          test "$(git branch --show-current)" = "arena/cc989019-game"
+          cp "$OUTPUT_DIR/vivid-validation.json" downloads/
+          cp "$OUTPUT_DIR/vivid-search.json" video-tools/
+          cp "$OUTPUT_DIR/vivid-analysis.json" video-tools/
+          cp "$OUTPUT_DIR/publication-vivid.json" video-tools/
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          paths = {Path(p.decode()) for p in subprocess.check_output(['git','ls-files','-z']).split(b'\0') if p}
+          paths.update(map(Path,['downloads/vivid-validation.json','video-tools/vivid-search.json','video-tools/vivid-analysis.json','video-tools/publication-vivid.json']))
+          size = sum(p.stat().st_size for p in paths if p.is_file())
+          assert size < 128*1024*1024, size
+          print('Tracked-file budget:',size)
+          PY
+          git config user.name 'Video processing'
+          git config user.email 'video-tools@users.noreply.github.com'
+          git add downloads/vivid-validation.json video-tools/vivid-search.json video-tools/vivid-analysis.json video-tools/publication-vivid.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record 120000 actual vivid trials and verified video publication"
+            git pull --rebase origin arena/cc989019-game
+            git push origin arena/cc989019-game
+          fi
+      - name: Retain small diagnostics without lossless masters or LUT caches
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vivid-120k-diagnostics
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            ${{ env.OUTPUT_DIR }}/*.json
+            ${{ env.OUTPUT_DIR }}/*.log
+            ${{ env.OUTPUT_DIR }}/*.progress.txt
+            ${{ env.OUTPUT_DIR }}/*.md
+            ${{ env.OUTPUT_DIR }}/cleanup/*.json
+            ${{ env.OUTPUT_DIR }}/cleanup/*.log
+            /tmp/vivid-smoke/*.json
+            /tmp/vivid-smoke/*.log
