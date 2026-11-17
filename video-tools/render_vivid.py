@@ -25,7 +25,7 @@ EXPORTS = {
 }
 
 
-def read_search(folder, allow_test=False):
+def read_search(folder, allow_test=False, *, require_lut=True):
     folder = Path(folder)
     search = json.loads((folder/'vivid-search.json').read_text())
     if search['source_sha256'] != base.SOURCE_SHA256 or search['release_tag'] != vivid.RELEASE_TAG:
@@ -44,10 +44,13 @@ def read_search(folder, allow_test=False):
     if search['archive']['file'] != vivid.ARCHIVE or sha256(folder/vivid.ARCHIVE) != search['archive']['sha256']:
         raise ValueError('The actual candidate evidence changed')
     lut = folder/'vivid-grade.cube'
-    if not lut.exists():
+    # Validation/recovery of already encoded, hashed MP4s needs the recorded
+    # grade identity, not a regenerated float LUT. CPU dispatch can change its
+    # last decimal bits. A fresh render/export still requires the exact LUT.
+    if require_lut and not lut.exists():
         vivid.write_lut(lut, selected['parameters'])
-    if sha256(lut) != search['lut']['sha256']:
-        raise ValueError('The selected LUT changed')
+    if lut.exists() and (lut.is_symlink() or sha256(lut) != search['lut']['sha256']):
+        raise ValueError('The selected LUT changed; use the original recorded cube for rendering')
     return search
 
 
@@ -101,7 +104,7 @@ def export(args, ffmpeg):
 
 
 def validate(args, ffmpeg):
-    search = read_search(args.output_dir, bool(args.test_frames or args.test_candidates))
+    search = read_search(args.output_dir, bool(args.test_frames or args.test_candidates), require_lut=False)
     analysis = json.loads((args.output_dir/'vivid-analysis.json').read_text())
     if analysis['color_selection_sha256'] != sha256(args.output_dir/'vivid-search.json') or analysis['selected_parameters'] != search['selected']['parameters'] or analysis['lut_sha256'] != search['lut']['sha256']:
         raise ValueError('Inconsistent color provenance')

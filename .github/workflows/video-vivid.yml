@@ -103,6 +103,7 @@ jobs:
           path: |
             ${{ env.OUTPUT_DIR }}/*.mp4
             ${{ env.OUTPUT_DIR }}/*.npz
+            ${{ env.OUTPUT_DIR }}/vivid-grade.cube
             ${{ env.OUTPUT_DIR }}/*.json
             ${{ env.OUTPUT_DIR }}/VIVID-README-RU.md
       - name: Publish only after all eight asset sizes and SHA256 digests match

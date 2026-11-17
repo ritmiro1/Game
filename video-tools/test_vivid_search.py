@@ -145,6 +145,18 @@ class VividPipelineTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 read_search(folder,allow_test=True)
 
+    def test_finished_bundle_validation_does_not_regenerate_float_lut(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder/vivid.ARCHIVE).write_bytes(b'explicit unit fixture, not candidate evidence')
+            metrics = dict(zip(vivid.METRICS,(1.2,1.1,2,4,0,0,.1,.01),strict=True))
+            selection = {'source_sha256':vivid.base.SOURCE_SHA256,'release_tag':vivid.RELEASE_TAG,'test_only':True,'selected':{'parameters':PARAMETERS,'native_guardrails_passed':True,'native_sample_metrics':[metrics]},'sample_frame_indexes':[2],'archive':{'file':vivid.ARCHIVE,'sha256':sha256(folder/vivid.ARCHIVE)},'lut':{'sha256':'recorded-on-another-cpu'}}
+            (folder/'vivid-search.json').write_text(json.dumps(selection))
+            read_search(folder,allow_test=True,require_lut=False)
+            self.assertFalse((folder/'vivid-grade.cube').exists())
+            with self.assertRaises(ValueError):
+                read_search(folder,allow_test=True)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -66,7 +66,7 @@ def bundle_files(folder):
         if not path.is_file() or path.is_symlink():
             raise ValueError('Missing or unsafe evidence file')
         files.append(path)
-    search = read_search(folder)
+    search = read_search(folder, require_lut=False)
     analysis = json.loads((folder/'vivid-analysis.json').read_text())
     if analysis['test_only'] or analysis['frames'] != base.FRAMES or analysis['source_sha256'] != base.SOURCE_SHA256:
         raise ValueError('Test or incomplete render provenance')

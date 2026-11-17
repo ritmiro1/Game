@@ -1,0 +1,76 @@
+{
+  "local_preview_only": true,
+  "source_frame_indexes": [
+    30,
+    165,
+    300,
+    435,
+    570,
+    705,
+    840,
+    975,
+    1110,
+    1245,
+    1380,
+    1485
+  ],
+  "comparison_sample_size": [
+    160,
+    212
+  ],
+  "mean_rgb_error_to_expected_lut_8bit": [
+    2.2482314109802246,
+    2.2709805965423584,
+    2.1791272163391113,
+    2.254392623901367,
+    2.1894948482513428,
+    2.271530866622925,
+    2.1651041507720947,
+    2.1862716674804688,
+    2.2353084087371826,
+    2.1942906379699707,
+    2.1500589847564697,
+    2.197317123413086
+  ],
+  "mean_rgb_difference_from_ungraded_master_8bit": [
+    9.202486038208008,
+    9.18170166015625,
+    9.583991050720215,
+    9.447463989257812,
+    9.638236999511719,
+    9.709748268127441,
+    9.657999038696289,
+    9.82414436340332,
+    9.57248306274414,
+    9.669859886169434,
+    9.714279174804688,
+    9.816774368286133
+  ],
+  "chroma_rms_ratio_to_ungraded_master": [
+    1.2199684381484985,
+    1.2163838148117065,
+    1.2273564338684082,
+    1.2333385944366455,
+    1.2413873672485352,
+    1.2402385473251343,
+    1.2351539134979248,
+    1.2440401315689087,
+    1.235550880432129,
+    1.2361700534820557,
+    1.237758994102478,
+    1.2384517192840576
+  ],
+  "all_samples_closer_to_expected_grade_than_ungraded": true,
+  "limitations": "Numerical checks on twelve reduced decoded frames, not subjective quality scores or a full-video visual inspection. These are local preview bytes, not the published runner output.",
+  "local_preview_file": "armorypass-ejoy-vivid-watch-720p.mp4",
+  "local_preview_sha256": "5eef7ff92e345d31f9dfd50af09abd3367220223054f3e485cf0ea1dcce049f3",
+  "local_preview_size": 4732198,
+  "local_preview_full_decode_passed": true,
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "lut_sha256": "fde165a3144e520626922b0d72c32d9f115a8fb5a34ac6fa156ad0fba1242888",
+  "processing_scripts_sha256": {
+    "vivid_search.py": "79499c1c3db7d6919ac838c8106259e903a58f9c420d9e38d191aa8a7928c02d",
+    "render_vivid.py": "0f1d7a592d15a0a24fd8f1122812f428786a61cd8100d35e8c12b53de7a241d1",
+    "restore_strong.py": "faba4764ea576003123556b7ff7d49a173cef36b22b28930d32b07c6cacd325b"
+  }
+}
