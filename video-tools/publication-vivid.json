@@ -1,0 +1,46 @@
+{
+  "release_id": 449183574,
+  "release_tag": "video-vivid-120k-20261110-cc989019",
+  "release_url": "https://github.com/ritmiro1/Game/releases/tag/video-vivid-120k-20261110-cc989019",
+  "published": true,
+  "published_at": "2026-11-17T20:52:15Z",
+  "render_commit": "f25c4729b82bf253d72ef3f198a6020974ae80b9",
+  "publication_commit": "f25c4729b82bf253d72ef3f198a6020974ae80b9",
+  "run_url": "https://github.com/ritmiro1/Game/actions/runs/44170192352",
+  "actual_evaluated_candidates": 120000,
+  "verified_assets": {
+    "armorypass-ejoy-vivid-watch-720p.mp4": {
+      "size": 4732454,
+      "sha256": "5c0247c5a8f3fb6e9f7cb89693946a4a1d14307d256adac19a7e8d1b817b6986"
+    },
+    "armorypass-ejoy-vivid-1080p.mp4": {
+      "size": 18571419,
+      "sha256": "44d456023ef187560e8a9cad3d9afdb8a65ca2bae7858d5f4af9ff0687656c38"
+    },
+    "armorypass-ejoy-vivid-4k.mp4": {
+      "size": 104434793,
+      "sha256": "459faa3abe267fd3c7584c6935480828495e4e57a1d1c3467b18224ccfc6c6c5"
+    },
+    "vivid-validation.json": {
+      "size": 3880,
+      "sha256": "6b45ddd6f0bb150ab517898aa349adb87c7d6c30d8e6418a918a778aed7bbbb8"
+    },
+    "vivid-search.json": {
+      "size": 17792,
+      "sha256": "d39d3da4f27ecec907b5345d955b7a3b6699f5528ecf8512f1e1531500859b5a"
+    },
+    "vivid-analysis.json": {
+      "size": 15519,
+      "sha256": "e8d5d516903330028211e5d70e427433e8f7075c2327419fe00d2c8f1010c6af"
+    },
+    "VIVID-README-RU.md": {
+      "size": 3722,
+      "sha256": "1f0d5ed66c3d33a24b43d00e0b035b9afdbade839fc7cd0d8e6b7174fdf21d91"
+    },
+    "vivid-120000-candidates.npz": {
+      "size": 18613783,
+      "sha256": "30f0b71721c9c6b90c6f42b06a7eb1c75ff89b335008eff084328666f336a210"
+    }
+  },
+  "all_sizes_and_sha256_match": true
+}

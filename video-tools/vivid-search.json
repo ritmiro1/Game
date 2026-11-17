@@ -1,0 +1,501 @@
+{
+  "schema_version": 1,
+  "release_tag": "video-vivid-120k-20261110-cc989019",
+  "source_sha256": "973b4e220d7b5a05ef8cd2c6e14d4cc36a513cd5fe4290f06cc0248b86574429",
+  "test_only": false,
+  "search_commit": "f25c4729b82bf253d72ef3f198a6020974ae80b9",
+  "cleanup_profile": "strong",
+  "sample_frame_indexes": [
+    30,
+    165,
+    300,
+    435,
+    570,
+    705,
+    840,
+    975,
+    1110,
+    1245,
+    1380,
+    1485
+  ],
+  "sample_size_native": [
+    480,
+    636
+  ],
+  "sample_fingerprints_rgb_sha256": [
+    "1986c2af5c30e2826e7d82fb74fec09214a3cb38d7ff129fc9dcaf1e9b5530da",
+    "8d0e690def2d00bc31937d33715391802f95635d394dd9dae9cc5c9580ac4996",
+    "ba023513410f306e3cb410652d84554f4302f1fbe8e066f1f7f004f5a0989836",
+    "4ea9368d131d144b8e8344f7b38de656f20651ff0b89a39433e42dcf7c71b8ac",
+    "7cf9858f1c68f97952d7eec714fe98da68e7f84622cc8f96dba373ef57c879c1",
+    "9177e0b1e87d46bcefd5a4c713cb4c3aa3ae57857906e7ccc00c2bdfb837f9d6",
+    "4e65a8778214e4f8e003bb109aafec7f0e6e1bf7d2b44cf31c6dffea8819ea16",
+    "1f9f56490035eb1728880e5db6258d6e1dc74a40bb83c21d33a095a246dac242",
+    "e757ef9e8658abc0e493cd1395808cb3d08f65c972306e9dafcd40df0cc04a8f",
+    "63fd7a26c53b263be6b6940c5a62388f323a2ae4b4e6aae4ded2722ebc921e2c",
+    "087c916a8d5ecd94682eaf10b58e20fa8050ee72bb714a9ba26e02fe9f95d0c7",
+    "86a1a4990f2630468d8fbe38f8978fe841de1f0d1c5e1555e6154950e96e90f5"
+  ],
+  "coarse_proxy_width_height": [
+    16,
+    21
+  ],
+  "coarse_sampling_method": "Fixed stratified pixel centers without averaging",
+  "parameter_names": [
+    "contrast",
+    "saturation",
+    "vibrance",
+    "exposure_stops",
+    "warmth",
+    "highlight_protection"
+  ],
+  "parameter_grid": {
+    "contrast": [
+      1.04,
+      1.0644444444444445,
+      1.088888888888889,
+      1.1133333333333333,
+      1.1377777777777778,
+      1.1622222222222223,
+      1.1866666666666668,
+      1.2111111111111112,
+      1.2355555555555555,
+      1.26
+    ],
+    "saturation": [
+      1.1,
+      1.1500000000000001,
+      1.2000000000000002,
+      1.25,
+      1.3,
+      1.35,
+      1.4000000000000001,
+      1.4500000000000002,
+      1.5,
+      1.55
+    ],
+    "vibrance": [
+      0.0,
+      0.03888888888888889,
+      0.07777777777777778,
+      0.11666666666666667,
+      0.15555555555555556,
+      0.19444444444444445,
+      0.23333333333333334,
+      0.27222222222222225,
+      0.3111111111111111,
+      0.35
+    ],
+    "exposure_stops": [
+      -0.04,
+      -0.011428571428571427,
+      0.017142857142857147,
+      0.045714285714285714,
+      0.07428571428571429,
+      0.10285714285714287,
+      0.13142857142857142,
+      0.16
+    ],
+    "warmth": [
+      -0.004,
+      0.0,
+      0.004,
+      0.008,
+      0.012
+    ],
+    "highlight_protection": [
+      0.15,
+      0.35,
+      0.55
+    ]
+  },
+  "actual_evaluated_candidates": 120000,
+  "unique_parameter_combinations": 120000,
+  "coarse_guardrail_pass_count": 5614,
+  "native_finalists_evaluated": 15,
+  "native_guardrail_pass_count": 12,
+  "guardrails": {
+    "minimum_frame_chroma_ratio": 1.08,
+    "maximum_frame_chroma_ratio": 1.55,
+    "minimum_frame_contrast_ratio": 1.015,
+    "maximum_frame_contrast_ratio": 1.25,
+    "minimum_frame_mean_luma_change_8bit": -2.5,
+    "maximum_frame_mean_luma_change_8bit": 8.0,
+    "maximum_frame_mean_abs_luma_change_8bit": 12.0,
+    "maximum_new_shadow_or_highlight_fraction": 0.002,
+    "maximum_frame_gamut_compression_fraction": 0.3,
+    "maximum_frame_mean_gamut_compression": 0.035
+  },
+  "ranking_targets": {
+    "chroma_rms_ratio": 1.27,
+    "luma_std_ratio": 1.1,
+    "mean_luma_change_8bit": 1.5,
+    "warmth": 0.004
+  },
+  "selected": {
+    "candidate_row": 17976,
+    "parameters": {
+      "contrast": 1.0644444227218628,
+      "saturation": 1.2999999523162842,
+      "vibrance": 0.3499999940395355,
+      "exposure_stops": 0.1314285695552826,
+      "warmth": 0.004000000189989805,
+      "highlight_protection": 0.15000000596046448
+    },
+    "native_guardrails_passed": true,
+    "native_preference_heuristic_not_quality_score": -1.1422841980532707,
+    "native_sample_metrics": [
+      {
+        "chroma_rms_ratio": 1.2254774570465088,
+        "luma_std_ratio": 1.0522860288619995,
+        "mean_luma_change_8bit": 5.569432735443115,
+        "mean_abs_luma_change_8bit": 5.587813854217529,
+        "shadow_loss_fraction": 8.516771777067333e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.21182192862033844,
+        "mean_gamut_compression": 0.027538560330867767,
+        "source_frame_index": 30
+      },
+      {
+        "chroma_rms_ratio": 1.2216209173202515,
+        "luma_std_ratio": 1.0521224737167358,
+        "mean_luma_change_8bit": 5.607876777648926,
+        "mean_abs_luma_change_8bit": 5.625860691070557,
+        "shadow_loss_fraction": 7.206499140011147e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.22983163595199585,
+        "mean_gamut_compression": 0.03031308390200138,
+        "source_frame_index": 165
+      },
+      {
+        "chroma_rms_ratio": 1.2314058542251587,
+        "luma_std_ratio": 1.0527563095092773,
+        "mean_luma_change_8bit": 5.697328090667725,
+        "mean_abs_luma_change_8bit": 5.714165687561035,
+        "shadow_loss_fraction": 9.499475709162652e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.19412997364997864,
+        "mean_gamut_compression": 0.026078397408127785,
+        "source_frame_index": 300
+      },
+      {
+        "chroma_rms_ratio": 1.2384767532348633,
+        "luma_std_ratio": 1.0520243644714355,
+        "mean_luma_change_8bit": 5.581089019775391,
+        "mean_abs_luma_change_8bit": 5.5990729331970215,
+        "shadow_loss_fraction": 2.94811325147748e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.16071802377700806,
+        "mean_gamut_compression": 0.020234156399965286,
+        "source_frame_index": 435
+      },
+      {
+        "chroma_rms_ratio": 1.2458076477050781,
+        "luma_std_ratio": 1.0520880222320557,
+        "mean_luma_change_8bit": 5.583950042724609,
+        "mean_abs_luma_change_8bit": 5.601563930511475,
+        "shadow_loss_fraction": 0.00010482180368853733,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.13581956923007965,
+        "mean_gamut_compression": 0.018303189426660538,
+        "source_frame_index": 570
+      },
+      {
+        "chroma_rms_ratio": 1.244493007659912,
+        "luma_std_ratio": 1.0522041320800781,
+        "mean_luma_change_8bit": 5.660479545593262,
+        "mean_abs_luma_change_8bit": 5.677864074707031,
+        "shadow_loss_fraction": 0.00010482180368853733,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.14567610621452332,
+        "mean_gamut_compression": 0.020425844937562943,
+        "source_frame_index": 705
+      },
+      {
+        "chroma_rms_ratio": 1.2385482788085938,
+        "luma_std_ratio": 1.0522558689117432,
+        "mean_luma_change_8bit": 5.678771018981934,
+        "mean_abs_luma_change_8bit": 5.695500373840332,
+        "shadow_loss_fraction": 5.89622650295496e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.14902712404727936,
+        "mean_gamut_compression": 0.02152343839406967,
+        "source_frame_index": 840
+      },
+      {
+        "chroma_rms_ratio": 1.2487248182296753,
+        "luma_std_ratio": 1.0527204275131226,
+        "mean_luma_change_8bit": 5.633810520172119,
+        "mean_abs_luma_change_8bit": 5.650725364685059,
+        "shadow_loss_fraction": 6.87893116264604e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.13766050338745117,
+        "mean_gamut_compression": 0.018635371699929237,
+        "source_frame_index": 975
+      },
+      {
+        "chroma_rms_ratio": 1.2396317720413208,
+        "luma_std_ratio": 1.0523810386657715,
+        "mean_luma_change_8bit": 5.679118633270264,
+        "mean_abs_luma_change_8bit": 5.69666051864624,
+        "shadow_loss_fraction": 6.551362730533583e-06,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.13357245922088623,
+        "mean_gamut_compression": 0.021061144769191742,
+        "source_frame_index": 1110
+      },
+      {
+        "chroma_rms_ratio": 1.24054753780365,
+        "luma_std_ratio": 1.0527324676513672,
+        "mean_luma_change_8bit": 5.669784069061279,
+        "mean_abs_luma_change_8bit": 5.687078475952148,
+        "shadow_loss_fraction": 4.585953865898773e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.1446835696697235,
+        "mean_gamut_compression": 0.02110941708087921,
+        "source_frame_index": 1245
+      },
+      {
+        "chroma_rms_ratio": 1.2410061359405518,
+        "luma_std_ratio": 1.0527429580688477,
+        "mean_luma_change_8bit": 5.712724208831787,
+        "mean_abs_luma_change_8bit": 5.729391574859619,
+        "shadow_loss_fraction": 4.585953865898773e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.14846043288707733,
+        "mean_gamut_compression": 0.020931992679834366,
+        "source_frame_index": 1380
+      },
+      {
+        "chroma_rms_ratio": 1.243119478225708,
+        "luma_std_ratio": 1.0525199174880981,
+        "mean_luma_change_8bit": 5.769885540008545,
+        "mean_abs_luma_change_8bit": 5.78429651260376,
+        "shadow_loss_fraction": 5.2410901844268665e-05,
+        "highlight_loss_fraction": 0.0,
+        "gamut_compression_fraction": 0.13949161767959595,
+        "mean_gamut_compression": 0.019659580662846565,
+        "source_frame_index": 1485
+      }
+    ]
+  },
+  "finalists": [
+    {
+      "candidate_row": 19056,
+      "parameters": {
+        "contrast": 1.0644444227218628,
+        "saturation": 1.350000023841858,
+        "vibrance": 0.31111112236976624,
+        "exposure_stops": 0.1314285695552826,
+        "warmth": 0.004000000189989805,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": false,
+      "native_preference_heuristic_not_quality_score": -1.0678579678442857
+    },
+    {
+      "candidate_row": 19416,
+      "parameters": {
+        "contrast": 1.0644444227218628,
+        "saturation": 1.399999976158142,
+        "vibrance": 0.03888889029622078,
+        "exposure_stops": 0.1314285695552826,
+        "warmth": 0.004000000189989805,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": false,
+      "native_preference_heuristic_not_quality_score": -1.0829678974763324
+    },
+    {
+      "candidate_row": 17976,
+      "parameters": {
+        "contrast": 1.0644444227218628,
+        "saturation": 1.2999999523162842,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.1314285695552826,
+        "warmth": 0.004000000189989805,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -1.1422841980532707
+    },
+    {
+      "candidate_row": 16779,
+      "parameters": {
+        "contrast": 1.0644444227218628,
+        "saturation": 1.25,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.1314285695552826,
+        "warmth": 0.00800000037997961,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -1.349509777739563
+    },
+    {
+      "candidate_row": 6906,
+      "parameters": {
+        "contrast": 1.0399999618530273,
+        "saturation": 1.350000023841858,
+        "vibrance": 0.27222222089767456,
+        "exposure_stops": 0.07428571581840515,
+        "warmth": 0.004000000189989805,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -1.4262283040362596
+    },
+    {
+      "candidate_row": 7386,
+      "parameters": {
+        "contrast": 1.0399999618530273,
+        "saturation": 1.399999976158142,
+        "vibrance": 0.03888889029622078,
+        "exposure_stops": 0.07428571581840515,
+        "warmth": 0.004000000189989805,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -1.4296081149015427
+    },
+    {
+      "candidate_row": 5946,
+      "parameters": {
+        "contrast": 1.0399999618530273,
+        "saturation": 1.2999999523162842,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.07428571581840515,
+        "warmth": 0.004000000189989805,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -1.4590326339403978
+    },
+    {
+      "candidate_row": 8481,
+      "parameters": {
+        "contrast": 1.0399999618530273,
+        "saturation": 1.4500000476837158,
+        "vibrance": 0.0,
+        "exposure_stops": 0.10285714268684387,
+        "warmth": 0.004000000189989805,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": false,
+      "native_preference_heuristic_not_quality_score": -1.4707896994142604
+    },
+    {
+      "candidate_row": 4749,
+      "parameters": {
+        "contrast": 1.0399999618530273,
+        "saturation": 1.25,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.07428571581840515,
+        "warmth": 0.00800000037997961,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -1.630377696462858
+    },
+    {
+      "candidate_row": 15579,
+      "parameters": {
+        "contrast": 1.0644444227218628,
+        "saturation": 1.2000000476837158,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.1314285695552826,
+        "warmth": 0.00800000037997961,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -1.7134661464302143
+    },
+    {
+      "candidate_row": 3549,
+      "parameters": {
+        "contrast": 1.0399999618530273,
+        "saturation": 1.2000000476837158,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.07428571581840515,
+        "warmth": 0.00800000037997961,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -1.9651073682601916
+    },
+    {
+      "candidate_row": 14382,
+      "parameters": {
+        "contrast": 1.0644444227218628,
+        "saturation": 1.149999976158142,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.1314285695552826,
+        "warmth": 0.012000000104308128,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -2.2439016139188017
+    },
+    {
+      "candidate_row": 2352,
+      "parameters": {
+        "contrast": 1.0399999618530273,
+        "saturation": 1.149999976158142,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.07428571581840515,
+        "warmth": 0.012000000104308128,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -2.489761562154228
+    },
+    {
+      "candidate_row": 13182,
+      "parameters": {
+        "contrast": 1.0644444227218628,
+        "saturation": 1.100000023841858,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.1314285695552826,
+        "warmth": 0.012000000104308128,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -2.9697020523777202
+    },
+    {
+      "candidate_row": 1152,
+      "parameters": {
+        "contrast": 1.0399999618530273,
+        "saturation": 1.100000023841858,
+        "vibrance": 0.3499999940395355,
+        "exposure_stops": 0.07428571581840515,
+        "warmth": 0.012000000104308128,
+        "highlight_protection": 0.15000000596046448
+      },
+      "native_guardrails_passed": true,
+      "native_preference_heuristic_not_quality_score": -3.221063743379432
+    }
+  ],
+  "archive": {
+    "file": "vivid-120000-candidates.npz",
+    "size": 18613783,
+    "sha256": "30f0b71721c9c6b90c6f42b06a7eb1c75ff89b335008eff084328666f336a210"
+  },
+  "lut": {
+    "file": "vivid-grade.cube",
+    "grid_size": 65,
+    "sha256": "7adda0ece810861bdaffba7589b3d329c078c52cb673b862fbe6d1bac3b4ec0b",
+    "interpolation": "tetrahedral"
+  },
+  "elapsed_seconds": 93.31222265799998,
+  "limitations": [
+    "120,000 attempts means distinct parameter configurations evaluated on twelve fixed 16x21 stratified source-pixel grids, not 120,000 complete video encodes or human visual reviews.",
+    "The shortlist is numerically rechecked on twelve cleaned native-size frames. Sampling can miss artifacts elsewhere.",
+    "Vividness is subjective. The ranking targets chosen relative chroma and contrast; it is not an objective perceptual quality score or proof of the best possible look.",
+    "Only the supplied 480x636 original is used. Cleanup can soften texture; 4K is an output canvas, not authentic recovered 4K detail.",
+    "A single constant SDR color transform adds saturation, contrast and bounded warmth. It does not create HDR or new scene detail, anatomy, actions, or intermediate frames.",
+    "The original full picture, 1518 frames and AAC packets are retained. Tiny original timestamp jitter is normalized to 30 fps within one millisecond.",
+    "Use 720p for less demanding playback. Performance on the user device is unmeasured."
+  ]
+}
